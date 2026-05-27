@@ -1,317 +1,384 @@
-import { Message, ApiUsage, ChatResponse, MemoryEntry, ProjectFile, ProjectFileChunk, AVAILABLE_MODELS } from '@/types';
-import { getSettings, getProjectMemories, getProjectFiles, getProjectFileChunks, addMessage, recordApiUsage } from './storage';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings } from '@/types';
+import * as storage from '@/services/storage';
+import { pickAndReadFile } from '@/utils/fileImport';
+import { normalizeFileText, chunkText, extractKeywords, createLocalSummary } from '@/utils/fileProcessing';
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+interface AppContextType {
+  // Projects
+  projects: Project[];
+  currentProject: Project | null;
+  loadingProjects: boolean;
+  loadProjects: () => Promise<void>;
+  selectProject: (project: Project | null) => Promise<void>;
+  createProject: (name: string, systemPrompt?: string) => Promise<Project>;
+  updateProject: (id: string, updates: Partial<Project>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
 
-// Token/cost safety caps (in characters, ~4 chars per token)
-const MAX_KNOWLEDGE_INDEX_CHARS = 6000;
-const MAX_RELEVANT_CHUNKS = 5;
-const MAX_CHUNK_CONTEXT_CHARS = 20000;
-const MAX_FULL_FILE_CHARS = 30000;
+  // Threads
+  threads: ChatThread[];
+  currentThread: ChatThread | null;
+  loadingThreads: boolean;
+  loadThreads: (projectId: string) => Promise<ChatThread[]>;
+  selectThread: (thread: ChatThread | null) => Promise<void>;
+  createThread: (projectId: string, title?: string) => Promise<ChatThread>;
+  updateThread: (id: string, updates: Partial<ChatThread>) => Promise<void>;
+  deleteThread: (id: string) => Promise<void>;
 
-interface OpenRouterMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  // Messages
+  messages: Message[];
+  loadingMessages: boolean;
+  loadMessages: (projectId: string, threadId: string) => Promise<void>;
+  clearMessages: (threadId: string) => Promise<void>;
+
+  // Memories
+  memories: MemoryEntry[];
+  loadingMemories: boolean;
+  loadMemories: (projectId: string) => Promise<void>;
+  createMemory: (projectId: string, title: string, content: string) => Promise<MemoryEntry>;
+  updateMemory: (id: string, updates: Partial<MemoryEntry>) => Promise<void>;
+  deleteMemory: (id: string) => Promise<void>;
+
+  // Project Files
+  files: ProjectFile[];
+  loadingFiles: boolean;
+  loadFiles: (projectId: string) => Promise<void>;
+  /** Pick a file from the device, process it, and save it with chunks. Throws FileSizeLimitError on oversized files. */
+  createProjectFileFromImport: (projectId: string) => Promise<ProjectFile | null>;
+  updateFile: (id: string, updates: Partial<ProjectFile>) => Promise<void>;
+  deleteFile: (id: string) => Promise<void>;
+  loadFileChunks: (fileId: string) => Promise<ProjectFileChunk[]>;
+
+  // Settings
+  settings: Settings;
+  loadingSettings: boolean;
+  loadSettings: () => Promise<void>;
+  updateSettings: (updates: Partial<Settings>) => Promise<void>;
 }
 
-interface OpenRouterResponse {
-  id: string;
-  choices: Array<{
-    message: { role: string; content: string };
-    finish_reason: string;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
+const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProject, setCurrentProject] = useState<Project | null>(null);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+
+  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [currentThread, setCurrentThread] = useState<ChatThread | null>(null);
+  const [loadingThreads, setLoadingThreads] = useState(false);
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+
+  const [memories, setMemories] = useState<MemoryEntry[]>([]);
+  const [loadingMemories, setLoadingMemories] = useState(false);
+
+  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+
+  const [settings, setSettings] = useState<Settings>({
+    openRouterApiKey: '',
+    selectedModel: 'openai/gpt-4o-mini',
+    theme: 'system',
+  });
+  const [loadingSettings, setLoadingSettings] = useState(false);
+
+  const loadProjects = useCallback(async () => {
+    setLoadingProjects(true);
+    try {
+      const loadedProjects = await storage.getProjects();
+      const sortedProjects = loadedProjects.sort((a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      );
+      setProjects(sortedProjects);
+      setCurrentProject(prev => prev ? sortedProjects.find(project => project.id === prev.id) || prev : null);
+    } finally {
+      setLoadingProjects(false);
+    }
+  }, []);
+
+  const loadThreads = useCallback(async (projectId: string): Promise<ChatThread[]> => {
+    setLoadingThreads(true);
+    try {
+      let loadedThreads = await storage.getProjectThreads(projectId);
+      if (loadedThreads.length === 0) {
+        const mainThread = await storage.createThread(projectId, 'Main Chat');
+        loadedThreads = [mainThread];
+      }
+      setThreads(loadedThreads);
+      return loadedThreads;
+    } finally {
+      setLoadingThreads(false);
+    }
+  }, []);
+
+  const loadMessages = useCallback(async (projectId: string, threadId: string) => {
+    setLoadingMessages(true);
+    try {
+      const loadedMessages = await storage.getMessages(projectId, threadId);
+      setMessages(loadedMessages);
+    } finally {
+      setLoadingMessages(false);
+    }
+  }, []);
+
+  const loadMemories = useCallback(async (projectId: string) => {
+    setLoadingMemories(true);
+    try {
+      const all = await storage.getAllMemories();
+      setMemories(all.filter(m => m.projectId === projectId));
+    } finally {
+      setLoadingMemories(false);
+    }
+  }, []);
+
+  const loadFiles = useCallback(async (projectId: string) => {
+    setLoadingFiles(true);
+    try {
+      const loadedFiles = await storage.getProjectFiles(projectId);
+      setFiles(loadedFiles);
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, []);
+
+  const selectThread = useCallback(async (thread: ChatThread | null) => {
+    setCurrentThread(thread);
+    if (thread) {
+      await loadMessages(thread.projectId, thread.id);
+    } else {
+      setMessages([]);
+    }
+  }, [loadMessages]);
+
+  const selectProject = useCallback(async (project: Project | null) => {
+    setCurrentProject(project);
+    if (project) {
+      const loadedThreads = await loadThreads(project.id);
+      const nextThread = loadedThreads[0] || null;
+      setCurrentThread(nextThread);
+      await Promise.all([
+        nextThread ? loadMessages(project.id, nextThread.id) : Promise.resolve().then(() => setMessages([])),
+        loadMemories(project.id),
+        loadFiles(project.id),
+      ]);
+    } else {
+      setThreads([]);
+      setCurrentThread(null);
+      setMessages([]);
+      setMemories([]);
+      setFiles([]);
+    }
+  }, [loadFiles, loadMemories, loadMessages, loadThreads]);
+
+  const createProject = useCallback(async (name: string, systemPrompt?: string) => {
+    const project = await storage.createProject(name, systemPrompt);
+    await loadProjects();
+    return project;
+  }, [loadProjects]);
+
+  const updateProject = useCallback(async (id: string, updates: Partial<Project>) => {
+    await storage.updateProject(id, updates);
+    await loadProjects();
+    if (currentProject?.id === id) {
+      setCurrentProject(prev => prev ? { ...prev, ...updates } : null);
+    }
+  }, [loadProjects, currentProject]);
+
+  const deleteProject = useCallback(async (id: string) => {
+    await storage.deleteProject(id);
+    await loadProjects();
+    if (currentProject?.id === id) {
+      setCurrentProject(null);
+      setThreads([]);
+      setCurrentThread(null);
+      setMessages([]);
+      setMemories([]);
+      setFiles([]);
+    }
+  }, [loadProjects, currentProject]);
+
+  const createThread = useCallback(async (projectId: string, title?: string) => {
+    const thread = await storage.createThread(projectId, title);
+    const loadedThreads = await loadThreads(projectId);
+    const nextThread = loadedThreads.find(item => item.id === thread.id) || thread;
+    if (currentProject?.id === projectId) {
+      await selectThread(nextThread);
+      await loadProjects();
+    }
+    return nextThread;
+  }, [currentProject, loadProjects, loadThreads, selectThread]);
+
+  const updateThread = useCallback(async (id: string, updates: Partial<ChatThread>) => {
+    await storage.updateThread(id, updates);
+    if (!currentProject) return;
+
+    const loadedThreads = await loadThreads(currentProject.id);
+    const nextCurrentThread = currentThread ? loadedThreads.find(item => item.id === currentThread.id) || null : null;
+    setCurrentThread(nextCurrentThread);
+    await loadProjects();
+  }, [currentProject, currentThread, loadProjects, loadThreads]);
+
+  const deleteThread = useCallback(async (id: string) => {
+    const targetThread = threads.find(thread => thread.id === id);
+    if (!targetThread) return;
+
+    await storage.deleteThread(id);
+    const loadedThreads = await loadThreads(targetThread.projectId);
+    const nextThread = loadedThreads[0] || null;
+
+    if (currentProject?.id === targetThread.projectId) {
+      setCurrentThread(nextThread);
+      if (nextThread) {
+        await loadMessages(targetThread.projectId, nextThread.id);
+      } else {
+        setMessages([]);
+      }
+      await loadProjects();
+    }
+  }, [currentProject, loadMessages, loadProjects, loadThreads, threads]);
+
+  const clearMessages = useCallback(async (threadId: string) => {
+    const thread = threads.find(item => item.id === threadId) || currentThread;
+    await storage.clearThreadMessages(threadId);
+    if (thread) {
+      await loadMessages(thread.projectId, thread.id);
+      await loadThreads(thread.projectId);
+      await loadProjects();
+    } else {
+      setMessages([]);
+    }
+  }, [currentThread, loadMessages, loadProjects, loadThreads, threads]);
+
+  const createMemory = useCallback(async (projectId: string, title: string, content: string) => {
+    const memory = await storage.createMemory(projectId, title, content);
+    await loadMemories(projectId);
+    return memory;
+  }, [loadMemories]);
+
+  const updateMemory = useCallback(async (id: string, updates: Partial<MemoryEntry>) => {
+    await storage.updateMemory(id, updates);
+    if (currentProject) await loadMemories(currentProject.id);
+  }, [loadMemories, currentProject]);
+
+  const deleteMemory = useCallback(async (id: string) => {
+    await storage.deleteMemory(id);
+    if (currentProject) await loadMemories(currentProject.id);
+  }, [loadMemories, currentProject]);
+
+  const createProjectFileFromImport = useCallback(async (projectId: string): Promise<ProjectFile | null> => {
+    // May throw FileSizeLimitError — callers should handle it
+    const imported = await pickAndReadFile();
+    if (!imported) return null;
+
+    const normalized = normalizeFileText(imported.content);
+    const summary = createLocalSummary(normalized);
+    const keywords = extractKeywords(normalized);
+    const rawChunks = chunkText(normalized);
+
+    // Save the file record first (processingStatus = 'processing')
+    const file = await storage.createProjectFile(projectId, imported.name, imported.mimeType, imported.size, normalized);
+
+    // Save chunks
+    await storage.createFileChunks(projectId, file.id, rawChunks);
+
+    // Update file with processed metadata
+    await storage.updateProjectFile(file.id, {
+      summary,
+      keywords,
+      chunkCount: rawChunks.length,
+      processingStatus: 'ready',
+      includeMode: 'auto',
+    });
+
+    await loadFiles(projectId);
+    return { ...file, summary, keywords, chunkCount: rawChunks.length, processingStatus: 'ready', includeMode: 'auto' };
+  }, [loadFiles]);
+
+  const updateFile = useCallback(async (id: string, updates: Partial<ProjectFile>) => {
+    await storage.updateProjectFile(id, updates);
+    if (currentProject) await loadFiles(currentProject.id);
+  }, [loadFiles, currentProject]);
+
+  const deleteFile = useCallback(async (id: string) => {
+    await storage.deleteProjectFile(id);
+    if (currentProject) await loadFiles(currentProject.id);
+  }, [loadFiles, currentProject]);
+
+  const loadFileChunks = useCallback(async (fileId: string): Promise<ProjectFileChunk[]> => {
+    return storage.getFileChunks(fileId);
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    setLoadingSettings(true);
+    try {
+      const loadedSettings = await storage.getSettings();
+      setSettings(loadedSettings);
+    } finally {
+      setLoadingSettings(false);
+    }
+  }, []);
+
+  const updateSettings = useCallback(async (updates: Partial<Settings>) => {
+    await storage.saveSettings(updates);
+    setSettings(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  const value: AppContextType = {
+    projects,
+    currentProject,
+    loadingProjects,
+    loadProjects,
+    selectProject,
+    createProject,
+    updateProject,
+    deleteProject,
+    threads,
+    currentThread,
+    loadingThreads,
+    loadThreads,
+    selectThread,
+    createThread,
+    updateThread,
+    deleteThread,
+    messages,
+    loadingMessages,
+    loadMessages,
+    clearMessages,
+    memories,
+    loadingMemories,
+    loadMemories,
+    createMemory,
+    updateMemory,
+    deleteMemory,
+    files,
+    loadingFiles,
+    loadFiles,
+    createProjectFileFromImport,
+    updateFile,
+    deleteFile,
+    loadFileChunks,
+    settings,
+    loadingSettings,
+    loadSettings,
+    updateSettings,
   };
+
+  return (
+    <AppContext.Provider value={value}>
+      {children}
+    </AppContext.Provider>
+  );
 }
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public code: string,
-    public status?: number
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-function buildMemoryContext(memories: MemoryEntry[]): string {
-  if (memories.length === 0) return '';
-  let context = '\n\n## Project Memory & Notes:\n\n';
-  for (const memory of memories) {
-    context += `### ${memory.title}\n${memory.content}\n\n`;
+export function useApp() {
+  const context = useContext(AppContext);
+  if (context === undefined) {
+    throw new Error('useApp must be used within an AppProvider');
   }
   return context;
-}
-
-function scoreChunk(
-  chunk: ProjectFileChunk,
-  file: ProjectFile,
-  queryTerms: string[]
-): number {
-  let score = 0;
-  const chunkTextLower = chunk.content.toLowerCase();
-  const titleLower = (chunk.title || '').toLowerCase();
-  const summaryLower = (chunk.summary || '').toLowerCase();
-  const fileNameLower = file.name.toLowerCase();
-  const chunkKeywords = (chunk.keywords || []).map(k => k.toLowerCase());
-
-  for (const term of queryTerms) {
-    if (term.length < 3) continue;
-    const t = term.toLowerCase();
-
-    if (fileNameLower.includes(t)) score += 2;
-    if (titleLower.includes(t)) score += 5;
-    if (summaryLower.includes(t)) score += 4;
-    if (chunkKeywords.some(k => k.includes(t))) score += 8;
-    if (chunkTextLower.includes(t)) score += 2;
-  }
-
-  // Slight boost for shorter chunks so huge chunks don't always win
-  if (chunk.content.length < 2000) score += 1;
-
-  return score;
-}
-
-function buildQueryTerms(
-  userMessage: string,
-  conversationHistory: Array<{ role: string; content: string }>
-): string[] {
-  const recentHistory = conversationHistory.slice(-3).map(m => m.content).join(' ');
-  const combined = `${userMessage} ${recentHistory}`;
-  return combined
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 3);
-}
-
-async function buildProjectKnowledgeContext(
-  projectId: string,
-  userMessage: string,
-  conversationHistory: Array<{ role: string; content: string }>
-): Promise<string> {
-  const files = await getProjectFiles(projectId);
-  const enabledFiles = files.filter(f => f.enabled);
-  if (enabledFiles.length === 0) return '';
-
-  const allChunks = await getProjectFileChunks(projectId);
-  const queryTerms = buildQueryTerms(userMessage, conversationHistory);
-
-  // Build the knowledge index section (compact overview of all files)
-  let indexSection = '\n\n## Project Knowledge Library:\n\n';
-  let indexChars = 0;
-
-  for (const file of enabledFiles) {
-    const mode = file.includeMode || 'auto';
-    const chunkCount = file.chunkCount ?? 1;
-    const summary = file.summary || '';
-    const keywords = (file.keywords || []).slice(0, 10).join(', ');
-
-    let entry = `**${file.name}** (${chunkCount} chunk${chunkCount !== 1 ? 's' : ''}, mode: ${mode})\n`;
-    if (summary) entry += `Summary: ${summary}\n`;
-    if (keywords) entry += `Keywords: ${keywords}\n`;
-    entry += '\n';
-
-    if (indexChars + entry.length <= MAX_KNOWLEDGE_INDEX_CHARS) {
-      indexSection += entry;
-      indexChars += entry.length;
-    } else {
-      indexSection += `**${file.name}** — [index truncated]\n\n`;
-    }
-  }
-
-  // Build the detailed excerpts section
-  let excerptsSection = '';
-  let totalExcerptChars = 0;
-
-  for (const file of enabledFiles) {
-    const mode = file.includeMode || 'auto';
-
-    if (mode === 'summary_only') {
-      if (file.summary) {
-        excerptsSection += `\n### ${file.name} — Summary\n${file.summary}\n`;
-      }
-      continue;
-    }
-
-    if (mode === 'full') {
-      let content = file.content;
-      let truncated = false;
-      const available = MAX_FULL_FILE_CHARS - totalExcerptChars;
-      if (content.length > available) {
-        content = content.slice(0, available);
-        truncated = true;
-      }
-      if (content.trim().length > 0) {
-        excerptsSection += `\n### ${file.name} — Full Content${truncated ? ' [TRUNCATED]' : ''}\n${content}\n`;
-        totalExcerptChars += content.length;
-      }
-      if (totalExcerptChars >= MAX_FULL_FILE_CHARS) break;
-      continue;
-    }
-
-    // auto mode: score and select top relevant chunks
-    const fileChunks = allChunks.filter(c => c.fileId === file.id && c.enabled);
-    if (fileChunks.length === 0) continue;
-
-    const scored = fileChunks
-      .map(chunk => ({ chunk, score: scoreChunk(chunk, file, queryTerms) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_RELEVANT_CHUNKS);
-
-    // Only include chunks with a non-zero score, or fall back to first chunk
-    const toInclude = scored.some(s => s.score > 0)
-      ? scored.filter(s => s.score > 0)
-      : [scored[0]];
-
-    // Sort back by original index for coherent reading order
-    toInclude.sort((a, b) => a.chunk.index - b.chunk.index);
-
-    for (const { chunk } of toInclude) {
-      const available = MAX_CHUNK_CONTEXT_CHARS - totalExcerptChars;
-      if (available <= 0) break;
-
-      let content = chunk.content;
-      let truncated = false;
-      if (content.length > available) {
-        content = content.slice(0, available);
-        truncated = true;
-      }
-
-      const chunkLabel = chunk.title
-        ? `${file.name} — ${chunk.title}`
-        : `${file.name} — chunk ${chunk.index + 1}`;
-
-      let entry = `\n### ${chunkLabel}${truncated ? ' [TRUNCATED]' : ''}\n`;
-      if (chunk.summary) entry += `Summary: ${chunk.summary}\n`;
-      if (chunk.keywords && chunk.keywords.length > 0) entry += `Keywords: ${chunk.keywords.slice(0, 8).join(', ')}\n`;
-      entry += `Content:\n${content}\n`;
-
-      excerptsSection += entry;
-      totalExcerptChars += content.length;
-    }
-
-    if (totalExcerptChars >= MAX_CHUNK_CONTEXT_CHARS) break;
-  }
-
-  let result = indexSection;
-  if (excerptsSection.trim()) {
-    result += '\n## Relevant Project File Excerpts\n' + excerptsSection;
-  }
-
-  return result;
-}
-
-export async function sendMessage(
-  projectId: string,
-  userMessage: string,
-  systemPrompt: string,
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
-  context?: string
-): Promise<ChatResponse> {
-  const settings = await getSettings();
-
-  if (!settings.openRouterApiKey) {
-    throw new ApiError('API key not configured. Please add your OpenRouter API key in Settings.', 'NO_API_KEY');
-  }
-
-  const messages: OpenRouterMessage[] = [];
-
-  const memories = await getProjectMemories(projectId);
-  const memoryContext = buildMemoryContext(memories);
-  const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, conversationHistory);
-
-  let fullSystemPrompt = systemPrompt;
-  if (memoryContext) fullSystemPrompt += memoryContext;
-  if (knowledgeContext) fullSystemPrompt += knowledgeContext;
-  if (context) fullSystemPrompt += '\n\n' + context;
-
-  if (fullSystemPrompt.trim()) {
-    messages.push({ role: 'system', content: fullSystemPrompt.trim() });
-  }
-
-  for (const msg of conversationHistory) {
-    messages.push({ role: msg.role, content: msg.content });
-  }
-  messages.push({ role: 'user', content: userMessage });
-
-  try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${settings.openRouterApiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://creative-writer.app',
-        'X-Title': 'Creative Writing Assistant',
-      },
-      body: JSON.stringify({
-        model: settings.selectedModel,
-        messages,
-        max_tokens: 10000,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData.error?.message || `API error: ${response.status}`;
-      if (response.status === 401) throw new ApiError('Invalid API key. Please check your OpenRouter API key.', 'INVALID_API_KEY', 401);
-      if (response.status === 429) throw new ApiError('Rate limit exceeded. Please wait a moment and try again.', 'RATE_LIMIT', 429);
-      if (response.status === 402) throw new ApiError('Insufficient credits. Please add credits to your OpenRouter account.', 'INSUFFICIENT_CREDITS', 402);
-      throw new ApiError(errorMessage, 'API_ERROR', response.status);
-    }
-
-    const data: OpenRouterResponse = await response.json();
-
-    const assistantContent = data.choices[0]?.message?.content || '';
-    const promptTokens = data.usage?.prompt_tokens || 0;
-    const completionTokens = data.usage?.completion_tokens || 0;
-    const totalTokens = data.usage?.total_tokens || promptTokens + completionTokens;
-
-    const usage: ApiUsage = { promptTokens, completionTokens, totalTokens, cost: undefined };
-
-    const model = AVAILABLE_MODELS.find(m => m.id === settings.selectedModel);
-    if (model) {
-      const { estimateCost } = require('@/utils/helpers');
-      usage.cost = estimateCost(promptTokens, completionTokens, settings.selectedModel);
-    }
-
-    await recordApiUsage(usage);
-
-    await addMessage({ projectId, role: 'user', content: userMessage, tokens: promptTokens });
-    const savedAssistantMessage = await addMessage({
-      projectId, role: 'assistant', content: assistantContent, tokens: completionTokens,
-    });
-
-    return { message: savedAssistantMessage, usage };
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    throw new ApiError(`Network error: ${errorMessage}. Please check your connection.`, 'NETWORK_ERROR');
-  }
-}
-
-export async function validateApiKey(apiKey: string): Promise<boolean> {
-  try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://creative-writer.app',
-        'X-Title': 'Creative Writing Assistant',
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
-        messages: [{ role: 'user', content: 'Hi' }],
-        max_tokens: 5,
-      }),
-    });
-    return response.ok || response.status === 429;
-  } catch {
-    return false;
-  }
 }
