@@ -30,7 +30,6 @@ function RootLayoutContent() {
 
 export default function RootLayout() {
   useFrameworkReady();
-  useFonts({ Cormorant_400Regular, Cormorant_500Medium, Cormorant_600SemiBold })
 
   return (
     <AppProvider>
