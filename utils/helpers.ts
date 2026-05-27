@@ -41,6 +41,8 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'anthropic/claude-3.5-sonnet': { input: 3, output: 15 },
     // Google
     'google/gemini-pro-1.5': { input: 1.25, output: 5 },
+    'google/gemma-4-31b-it:free': { input: 0, output: 0 },
+    'google/gemma-4-31b-it': { input: 0.12, output: 0.37 },
     // Meta
     'meta-llama/llama-3.1-70b-instruct': { input: 0.9, output: 0.9 },
     // Mistral
@@ -48,6 +50,8 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     // OpenAI
     'openai/gpt-4o': { input: 2.5, output: 10 },
     'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
+    // OpenRouter
+    'openrouter/owl-alpha': { input: 0, output: 0 },
     // Z.ai GLM Models
     'z-ai/glm-4-32b': { input: 0.1, output: 0.1 },
     'z-ai/glm-4.5-air': { input: 0.13, output: 0.85 },

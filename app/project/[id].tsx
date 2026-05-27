@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Share,
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
@@ -32,7 +33,7 @@ import { sendMessage, ApiError } from '@/services/api';
 import { formatTokens, formatDate } from '@/utils/helpers';
 import { Message, Project, ProjectFile, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
-import { FileSizeLimitError } from '@/utils/fileImport';
+import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -46,40 +47,73 @@ interface ChatMessageProps {
 }
 
 function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
+  if (isUser) {
+    // User — warm surface panel with blue left accent
+    return (
+      <View style={{
+        padding: 14,
+        marginVertical: 8,
+        backgroundColor: colors.proseUserBg,
+        borderRadius: 8,
+        borderLeftWidth: 3,
+        borderLeftColor: colors.proseUserAccent,
+      }}>
+        <Text style={{
+          fontSize: 11,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+          marginBottom: 8,
+        }}>You</Text>
+        <Text style={{
+          fontSize: 15,
+          lineHeight: 24,
+          color: colors.proseUserText,
+        }}>{message.content}</Text>
+      </View>
+    );
+  }
+
+  // AI — full-width serif prose, amber dot label
   return (
-    <View
-      style={[
-        styles.messageContainer,
-        isUser ? styles.userMessageContainer : styles.assistantMessageContainer,
-      ]}
-    >
-      <View
-        style={[
-          styles.messageBubble,
-          {
-            backgroundColor: isUser ? colors.bubbleUser : colors.bubbleAssistant,
-          },
-        ]}
-      >
-        <Text
-          style={[
-            styles.messageText,
-            { color: isUser ? colors.bubbleUserText : colors.bubbleAssistantText },
-          ]}
-        >
-          {message.content}
-        </Text>
+    <View style={{
+      paddingVertical: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    }}>
+      <View style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 10,
+      }}>
+        <View style={{
+          width: 6, height: 6,
+          borderRadius: 3,
+          backgroundColor: colors.proseAiAccent,
+        }} />
+        <Text style={{
+          fontSize: 11,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        }}>Assistant</Text>
         {message.tokens && (
-          <Text
-            style={[
-              styles.tokenCount,
-              { color: isUser ? 'rgba(255,255,255,0.7)' : colors.textTertiary },
-            ]}
-          >
-            {formatTokens(message.tokens)} tokens
-          </Text>
+          <Text style={{
+            fontSize: 10,
+            color: colors.textTertiary,
+            marginLeft: 'auto',
+          }}>{formatTokens(message.tokens)} tokens</Text>
         )}
       </View>
+      <Text style={{
+        fontFamily: 'Cormorant_400Regular',  // or just 'Cormorant' if loaded differently
+        fontSize: 16.5,
+        lineHeight: 28,  // ~1.72 ratio
+        color: colors.proseAiText,
+      }}>{message.content}</Text>
     </View>
   );
 }
@@ -208,14 +242,26 @@ export default function ProjectScreen() {
 
   const handleExport = async () => {
     if (!currentProject) return;
-    const text = await storage.exportConversation(currentProject.id);
-    // On web, use clipboard
-    if (Platform.OS === 'web') {
-      navigator.clipboard?.writeText(text);
-      Alert.alert('Copied', 'Conversation copied to clipboard');
-    } else {
-      // On native, show share dialog (simplified - just show alert)
-      Alert.alert('Export', 'Copy the conversation text from the alert.');
+    try {
+      const text = await storage.exportConversation(currentProject.id);
+      if (!text.trim()) {
+        Alert.alert('Nothing to Export', 'This conversation is empty.');
+        return;
+      }
+
+      if (Platform.OS === 'web') {
+        await navigator.clipboard?.writeText(text);
+        Alert.alert('Copied', 'Conversation copied to clipboard');
+        return;
+      }
+
+      await Share.share({
+        message: text,
+        title: `${currentProject.name} conversation export`,
+      });
+    } catch (error) {
+      console.error('Error exporting conversation:', error);
+      Alert.alert('Export Failed', 'Could not export this conversation. Please try again.');
     }
   };
 
@@ -225,18 +271,25 @@ export default function ProjectScreen() {
     setSystemPromptModalVisible(false);
   };
 
-  const handleImportFile = async () => {
-    if (!currentProject) return;
-    try {
-      await createProjectFileFromImport(currentProject.id);
-    } catch (err) {
-      if (err instanceof FileSizeLimitError) {
-        Alert.alert('File Too Large', err.message);
-      } else {
-        Alert.alert('Import Failed', 'Could not read the file. Please try another file.');
-      }
+const handleImportFile = async () => {
+  if (!currentProject) return;
+
+  try {
+    const imported = await createProjectFileFromImport(currentProject.id);
+
+    if (imported) {
+      Alert.alert('File Imported', `"${imported.name}" was added to this project.`);
     }
-  };
+  } catch (err) {
+    if (err instanceof FileSizeLimitError || err instanceof UnsupportedFileTypeError) {
+      Alert.alert('Import Failed', err.message);
+    } else if (err instanceof Error) {
+      Alert.alert('Import Failed', err.message);
+    } else {
+      Alert.alert('Import Failed', 'Could not read the file. Please try another text file.');
+    }
+  }
+};
 
   // Tools handlers
   const handleGenerateOutline = async () => {
@@ -287,7 +340,7 @@ Consider pacing, tension building, and character development.`;
                 onPress={() => handleQuickAction(action)}
                 disabled={isLoading}
               >
-                <Sparkles size={16} color={colors.primary} />
+                <Sparkles size={16} color={colors.secondary} />
                 <Text style={[styles.quickActionText, { color: colors.text }]}>
                   {action.label}
                 </Text>
@@ -301,7 +354,7 @@ Consider pacing, tension building, and character development.`;
       <ScrollView
         ref={scrollViewRef}
         style={styles.messagesContainer}
-        contentContainerStyle={styles.messagesContent}
+        contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -456,7 +509,7 @@ Consider pacing, tension building, and character development.`;
                 style={[styles.quickActionCard, { backgroundColor: colors.surface }]}
                 onPress={() => handleQuickAction(action)}
               >
-                <Sparkles size={20} color={colors.primary} />
+                <Sparkles size={16} color={colors.secondary} />
                 <Text style={[styles.quickActionCardText, { color: colors.text }]}>
                   {action.label}
                 </Text>

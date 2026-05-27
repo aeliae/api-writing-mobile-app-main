@@ -1,94 +1,158 @@
 # Creative Writing Assistant
 
-A mobile-friendly React Native (Expo) app for creative writing assistance powered by the OpenRouter API.
+Creative Writing Assistant is a mobile-friendly Expo app for writing with AI. It gives each story or project its own workspace, then lets you chat with an OpenRouter model while keeping prompts, notes, and imported reference files tied to that project.
 
-## Features
+## What the app does
 
-### Projects System
-- Create, rename, and delete projects
-- Each project has its own system prompt, chat history, and memory notes
-- Project dashboard with last-modified timestamps
+- Create and manage writing projects
+- Keep separate chat history for each project
+- Configure a custom system prompt per project
+- Store persistent memory notes for characters, plot points, lore, or reminders
+- Import text-based reference files and include them in AI requests automatically
+- Use built-in writing prompt starters for outlines, scene ideas, rewrites, dialogue, and continuation
+- Export a conversation as plain text
+- Choose an OpenRouter model and switch between light, dark, and system theme modes
 
-### Chat & History
-- Clean, mobile-optimized chat interface with bubble-style messages
-- Full conversation history preserved per project
-- Clear history option without deleting the project
-- Export conversation as plain text
+## Current feature set
 
-### System Prompt Management
-- Editable system prompt per project
-- Starter templates: Fantasy world-building, Noir editor, Creative writing coach
+### Projects
 
-### Memory Panel
-- Save important notes (characters, plot points, world-building details)
-- Toggle individual memory entries on/off
-- Memory content automatically injected into each AI message
+Each project has its own:
 
-### Creative Writing Tools
-- **Story Outline Generator**: Generate structured 3-act or chapter-by-chapter outlines
-- **Scene Suggestions**: AI suggests next scenes based on current story
-- **Quick Actions**: One-tap prompts for common tasks
+- Name
+- Chat history
+- System prompt
+- Memory notes
+- Imported files
+
+Projects are stored locally and sorted by most recently updated.
+
+### Chat
+
+The main writing screen includes:
+
+- A mobile-first chat interface
+- Conversation persistence per project
+- Per-response token counts
+- Clear-history action
+- Export/share conversation action
+
+### Memory
+
+The Memory tab is for reusable project context such as:
+
+- Character notes
+- World-building rules
+- Plot threads
+- Research reminders
+
+Enabled memory notes are automatically appended to the AI context for that project.
+
+### Files and Context
+
+You can import text-based files into a project to give the assistant more grounded context. The app currently supports files such as:
+
+- `.txt`
+- `.md` / `.markdown`
+- `.json`
+- `.csv`
+- `.yaml` / `.yml`
+- `.html`
+- `.py`, `.js`, `.ts`, `.jsx`, `.tsx`
+- `.sql`
+- `.xml`
+
+Imported files are:
+
+- Read locally on-device
+- Normalized and chunked
+- Given a lightweight local summary and keyword list
+- Reused as context during AI requests
+
+Each file can be included in one of three modes:
+
+- `Auto`: send the summary plus the most relevant excerpts
+- `Summary only`: send only the file summary
+- `Full file`: send the full file content
+
+This makes the app useful not just for fiction drafting, but also for working from outlines, notes, research snippets, and structured reference material.
+
+### Tools
+
+The Tools tab provides prompt starters for common writing tasks, including:
+
+- Story outline generation
+- Scene suggestions
+- Continue writing
+- Dialogue suggestions
+- Setting descriptions
+- Plot-hole checks
+- Rewriting assistance
 
 ### Settings
-- OpenRouter API key configuration
-- Model selection (GPT-4, Claude, Mistral, Gemini, Llama)
-- Dark/Light/System theme support
-- Token usage tracking and cost estimates
 
-## Setup
+Settings currently let you:
+
+- Save an OpenRouter API key
+- Choose from multiple OpenRouter-served models
+- Switch theme mode
+
+The bundled model list includes options from providers such as OpenAI, Anthropic, Google, Meta, Mistral, Z.ai, and OpenRouter.
+
+## Tech stack
+
+- React Native
+- Expo SDK 54
+- Expo Router
+- AsyncStorage for local persistence
+- OpenRouter Chat Completions API
+
+## Local-first storage
+
+The app does not require its own backend. Project data is stored locally with AsyncStorage, including:
+
+- Projects
+- Messages
+- Memory notes
+- Imported files
+- File chunks and summaries
+- User settings
+
+## Getting started
 
 ### Prerequisites
-- Node.js 18+
-- npm or yarn
 
-### Installation
+- Node.js 18+
+- npm
+
+### Install and run
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
-### Configuration
+From the Expo dev server, you can run the app on web, Android, or iOS.
 
-1. Get an OpenRouter API key from [openrouter.ai](https://openrouter.ai)
-2. Open the app and navigate to Settings
-3. Enter your API key
-4. Select your preferred AI model
-5. Start creating projects and writing!
+## Configuration
 
-## Building for Production
+1. Create or copy an API key from [OpenRouter](https://openrouter.ai)
+2. Open the app and go to Settings
+3. Paste your API key
+4. Choose a model
+5. Create a project and start writing
+
+## Build
+
+### Web export
 
 ```bash
-# Build for web
 npm run build:web
-
-# Build for iOS (requires Expo account)
-npx expo build:ios
-
-# Build for Android (requires Expo account)
-npx expo build:android
 ```
 
-## Tech Stack
+### Native builds
 
-- **React Native** with **Expo SDK 54**
-- **Expo Router** for navigation
-- **AsyncStorage** for local data persistence
-- **OpenRouter API** for AI responses
-- **Lucide React Native** for icons
-
-## Data Storage
-
-All data is stored locally on the device using AsyncStorage:
-- Projects
-- Chat messages
-- Memory notes
-- Settings
-
-No backend or server required.
+This repo includes an `eas.json` configuration for EAS builds. Use EAS for native release builds rather than the old `expo build:*` commands.
 
 ## License
 
