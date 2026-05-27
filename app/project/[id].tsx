@@ -48,6 +48,22 @@ interface ChatMessageProps {
   isUser: boolean;
 }
 
+function createTemporaryMessage(
+  projectId: string,
+  threadId: string,
+  role: 'user' | 'assistant',
+  content: string
+): Message {
+  return {
+    id: `temp-${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    projectId,
+    threadId,
+    role,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
@@ -134,6 +150,8 @@ export default function ProjectScreen() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [optimisticUserMessage, setOptimisticUserMessage] = useState<Message | null>(null);
+  const [streamingAssistantText, setStreamingAssistantText] = useState('');
   const [currentTab, setCurrentTab] = useState<TabType>('chat');
   const [toolsTab, setToolsTab] = useState<ToolsSubTab>('outline');
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
@@ -147,6 +165,7 @@ export default function ProjectScreen() {
 
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -164,12 +183,18 @@ export default function ProjectScreen() {
   }, [currentProject?.id, id, projects, selectProject]);
 
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 || optimisticUserMessage || streamingAssistantText) {
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: false });
       }, 100);
     }
-  }, [messages.length]);
+  }, [messages.length, optimisticUserMessage, streamingAssistantText]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   const handleSendMessage = async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
@@ -183,6 +208,19 @@ export default function ProjectScreen() {
     setInputText('');
     setIsLoading(true);
     setError(null);
+    setLastUsage(null);
+    setStreamingAssistantText('');
+
+    const tempUserMessage = createTemporaryMessage(
+      currentProject.id,
+      currentThread.id,
+      'user',
+      messageText
+    );
+    setOptimisticUserMessage(tempUserMessage);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       // Build conversation history (excluding system messages)
@@ -199,7 +237,13 @@ export default function ProjectScreen() {
         messageText,
         systemPrompt,
         conversationHistory,
-        contextPrompt ? undefined : undefined
+        contextPrompt ? undefined : undefined,
+        {
+          signal: controller.signal,
+          onChunk: (content) => {
+            setStreamingAssistantText(content);
+          },
+        }
       );
 
       setLastUsage({
@@ -212,13 +256,19 @@ export default function ProjectScreen() {
       await loadMessages(currentProject.id, currentThread.id);
       await loadThreads(currentProject.id);
       await loadProjects(); // Update project's updatedAt
+      setOptimisticUserMessage(null);
+      setStreamingAssistantText('');
     } catch (err) {
+      setInputText(messageText);
       if (err instanceof ApiError) {
         setError(err.message);
       } else {
         setError('An unexpected error occurred. Please try again.');
       }
+      setOptimisticUserMessage(null);
+      setStreamingAssistantText('');
     } finally {
+      abortControllerRef.current = null;
       setIsLoading(false);
     }
   };
@@ -395,7 +445,7 @@ Consider pacing, tension building, and character development.`;
         <TouchableOpacity
           style={[styles.threadSelector, { backgroundColor: colors.surface, borderColor: colors.border }]}
           onPress={() => setThreadPickerVisible(true)}
-          disabled={loadingThreads}
+          disabled={loadingThreads || isLoading}
         >
           <View style={styles.threadSelectorText}>
             <Text style={[styles.threadLabel, { color: colors.textSecondary }]}>Current Chat</Text>
@@ -409,6 +459,7 @@ Consider pacing, tension building, and character development.`;
         <TouchableOpacity
           style={[styles.threadQuickButton, { backgroundColor: colors.primaryLight }]}
           onPress={openNewThreadModal}
+          disabled={isLoading}
         >
           <Plus size={16} color={colors.primary} />
           <Text style={[styles.threadQuickButtonText, { color: colors.primary }]}>New Chat</Text>
@@ -417,7 +468,7 @@ Consider pacing, tension building, and character development.`;
         <TouchableOpacity
           style={[styles.threadIconButton, { backgroundColor: colors.surfaceSecondary }]}
           onPress={() => setThreadActionsVisible(true)}
-          disabled={!currentThread}
+          disabled={!currentThread || isLoading}
         >
           <MoreVertical size={18} color={colors.textSecondary} />
         </TouchableOpacity>
@@ -464,23 +515,46 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
 
-        {messages.length === 0 && !isLoading ? (
+        {messages.length === 0 && !optimisticUserMessage && !streamingAssistantText && !isLoading ? (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
         ) : (
-          messages.map((message) => (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              colors={colors}
-              isUser={message.role === 'user'}
-            />
-          ))
+          <>
+            {messages.map((message) => (
+              <ChatMessage
+                key={message.id}
+                message={message}
+                colors={colors}
+                isUser={message.role === 'user'}
+              />
+            ))}
+            {optimisticUserMessage && (
+              <ChatMessage
+                key={optimisticUserMessage.id}
+                message={optimisticUserMessage}
+                colors={colors}
+                isUser
+              />
+            )}
+            {streamingAssistantText ? (
+              <ChatMessage
+                key="streaming-assistant"
+                message={createTemporaryMessage(
+                  optimisticUserMessage?.projectId || currentProject?.id || '',
+                  optimisticUserMessage?.threadId || currentThread?.id || '',
+                  'assistant',
+                  streamingAssistantText
+                )}
+                colors={colors}
+                isUser={false}
+              />
+            ) : null}
+          </>
         )}
 
-        {isLoading && (
+        {isLoading && !streamingAssistantText && (
           <View style={[styles.loadingMessage, { backgroundColor: colors.surface }]}>
             <ActivityIndicator color={colors.primary} size="small" />
             <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
