@@ -9,10 +9,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Share,
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Send,
@@ -24,15 +25,17 @@ import {
   ChevronDown,
   Sparkles,
   FolderOpen,
+  Plus,
+  MoreVertical,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
-import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel } from '@/components';
+import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
 import { formatTokens, formatDate } from '@/utils/helpers';
-import { Message, Project, ProjectFile, QUICK_ACTIONS } from '@/types';
+import { Message, ChatThread, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
-import { FileSizeLimitError } from '@/utils/fileImport';
+import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -46,53 +49,85 @@ interface ChatMessageProps {
 }
 
 function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
+  if (isUser) {
+    // User — warm surface panel with blue left accent
+    return (
+      <View style={{
+        padding: 14,
+        marginVertical: 8,
+        backgroundColor: colors.proseUserBg,
+        borderRadius: 8,
+        borderLeftWidth: 3,
+        borderLeftColor: colors.proseUserAccent,
+      }}>
+        <Text style={{
+          fontSize: 11,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+          marginBottom: 8,
+        }}>You</Text>
+        <Text style={{
+          fontSize: 15,
+          lineHeight: 24,
+          color: colors.proseUserText,
+        }}>{message.content}</Text>
+      </View>
+    );
+  }
+
+  // AI — full-width serif prose, amber dot label
   return (
-    <View
-      style={[
-        styles.messageContainer,
-        isUser ? styles.userMessageContainer : styles.assistantMessageContainer,
-      ]}
-    >
-      <View
-        style={[
-          styles.messageBubble,
-          {
-            backgroundColor: isUser ? colors.bubbleUser : colors.bubbleAssistant,
-          },
-        ]}
-      >
-        <Text
-          style={[
-            styles.messageText,
-            { color: isUser ? colors.bubbleUserText : colors.bubbleAssistantText },
-          ]}
-        >
-          {message.content}
-        </Text>
+    <View style={{
+      paddingVertical: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    }}>
+      <View style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 10,
+      }}>
+        <View style={{
+          width: 6, height: 6,
+          borderRadius: 3,
+          backgroundColor: colors.proseAiAccent,
+        }} />
+        <Text style={{
+          fontSize: 11,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        }}>Assistant</Text>
         {message.tokens && (
-          <Text
-            style={[
-              styles.tokenCount,
-              { color: isUser ? 'rgba(255,255,255,0.7)' : colors.textTertiary },
-            ]}
-          >
-            {formatTokens(message.tokens)} tokens
-          </Text>
+          <Text style={{
+            fontSize: 10,
+            color: colors.textTertiary,
+            marginLeft: 'auto',
+          }}>{formatTokens(message.tokens)} tokens</Text>
         )}
       </View>
+      <Text style={{
+        fontFamily: 'Cormorant_400Regular',  // or just 'Cormorant' if loaded differently
+        fontSize: 16.5,
+        lineHeight: 28,  // ~1.72 ratio
+        color: colors.proseAiText,
+      }}>{message.content}</Text>
     </View>
   );
 }
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
   const { colors } = useTheme();
   const {
     projects, loadProjects, selectProject, currentProject,
-    messages, loadMessages,
-    memories, loadMemories,
-    files, loadingFiles, loadFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
+    threads, currentThread, loadingThreads, loadThreads, selectThread, createThread, updateThread, deleteThread,
+    messages, loadMessages, clearMessages,
+    files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile: deleteProjectFile, loadFileChunks,
     settings, updateProject,
   } = useApp();
 
@@ -104,26 +139,30 @@ export default function ProjectScreen() {
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
   const [systemPromptModalVisible, setSystemPromptModalVisible] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [threadPickerVisible, setThreadPickerVisible] = useState(false);
+  const [threadActionsVisible, setThreadActionsVisible] = useState(false);
+  const [threadEditorVisible, setThreadEditorVisible] = useState(false);
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [threadTitleDraft, setThreadTitleDraft] = useState('');
 
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
 
-  // Find and select project
   useFocusEffect(
     useCallback(() => {
-      if (id && typeof id === 'string') {
-        loadProjects().then(() => {
-          const project = projects.find((p) => p.id === id);
-          if (project) {
-            selectProject(project);
-            setSystemPrompt(project.systemPrompt);
-          }
-        });
-      }
-    }, [id])
+      loadProjects();
+    }, [loadProjects])
   );
 
-  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (!id || typeof id !== 'string') return;
+
+    const project = projects.find((item) => item.id === id);
+    if (project && currentProject?.id !== project.id) {
+      void selectProject(project);
+    }
+  }, [currentProject?.id, id, projects, selectProject]);
+
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => {
@@ -134,7 +173,7 @@ export default function ProjectScreen() {
 
   const handleSendMessage = async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
-    if (!messageText || !currentProject || isLoading) return;
+    if (!messageText || !currentProject || !currentThread || isLoading) return;
 
     if (!settings.openRouterApiKey) {
       Alert.alert('API Key Required', 'Please configure your OpenRouter API key in Settings.');
@@ -156,6 +195,7 @@ export default function ProjectScreen() {
 
       const response = await sendMessage(
         currentProject.id,
+        currentThread.id,
         messageText,
         systemPrompt,
         conversationHistory,
@@ -169,7 +209,8 @@ export default function ProjectScreen() {
       });
 
       // Reload messages
-      await loadMessages(currentProject.id);
+      await loadMessages(currentProject.id, currentThread.id);
+      await loadThreads(currentProject.id);
       await loadProjects(); // Update project's updatedAt
     } catch (err) {
       if (err instanceof ApiError) {
@@ -187,19 +228,18 @@ export default function ProjectScreen() {
   };
 
   const handleClearHistory = () => {
+    if (!currentThread) return;
+
     Alert.alert(
       'Clear Conversation',
-      'Are you sure you want to clear all messages in this project? This cannot be undone.',
+      `Are you sure you want to clear "${currentThread.title}"? This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear',
           style: 'destructive',
           onPress: async () => {
-            if (currentProject) {
-              await storage.clearProjectMessages(currentProject.id);
-              await loadMessages(currentProject.id);
-            }
+            await clearMessages(currentThread.id);
           },
         },
       ]
@@ -207,15 +247,28 @@ export default function ProjectScreen() {
   };
 
   const handleExport = async () => {
-    if (!currentProject) return;
-    const text = await storage.exportConversation(currentProject.id);
-    // On web, use clipboard
-    if (Platform.OS === 'web') {
-      navigator.clipboard?.writeText(text);
-      Alert.alert('Copied', 'Conversation copied to clipboard');
-    } else {
-      // On native, show share dialog (simplified - just show alert)
-      Alert.alert('Export', 'Copy the conversation text from the alert.');
+    if (!currentProject || !currentThread) return;
+
+    try {
+      const text = await storage.exportConversation(currentProject.id, currentThread.id);
+      if (!text.trim()) {
+        Alert.alert('Nothing to Export', 'This conversation is empty.');
+        return;
+      }
+
+      if (Platform.OS === 'web') {
+        await navigator.clipboard?.writeText(text);
+        Alert.alert('Copied', 'Conversation copied to clipboard');
+        return;
+      }
+
+      await Share.share({
+        message: text,
+        title: `${currentProject.name} conversation export`,
+      });
+    } catch (error) {
+      console.error('Error exporting conversation:', error);
+      Alert.alert('Export Failed', 'Could not export this conversation. Please try again.');
     }
   };
 
@@ -225,15 +278,80 @@ export default function ProjectScreen() {
     setSystemPromptModalVisible(false);
   };
 
+  const openNewThreadModal = () => {
+    setEditingThreadId(null);
+    setThreadTitleDraft(`Chat ${threads.length + 1}`);
+    setThreadPickerVisible(false);
+    setThreadActionsVisible(false);
+    setThreadEditorVisible(true);
+  };
+
+  const openRenameThreadModal = () => {
+    if (!currentThread) return;
+
+    setEditingThreadId(currentThread.id);
+    setThreadTitleDraft(currentThread.title);
+    setThreadActionsVisible(false);
+    setThreadEditorVisible(true);
+  };
+
+  const handleSaveThread = async () => {
+    if (!currentProject) return;
+
+    const title = threadTitleDraft.trim() || `Chat ${threads.length + 1}`;
+    if (editingThreadId) {
+      await updateThread(editingThreadId, { title });
+    } else {
+      await createThread(currentProject.id, title);
+    }
+
+    setThreadEditorVisible(false);
+    setEditingThreadId(null);
+    setThreadTitleDraft('');
+  };
+
+  const handleSelectThread = async (thread: ChatThread) => {
+    setThreadPickerVisible(false);
+    await selectThread(thread);
+  };
+
+  const handleDeleteCurrentThread = () => {
+    if (!currentThread) return;
+
+    Alert.alert(
+      'Delete Chat',
+      `Delete "${currentThread.title}" and all of its messages? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setThreadActionsVisible(false);
+            setThreadPickerVisible(false);
+            await deleteThread(currentThread.id);
+          },
+        },
+      ]
+    );
+  };
+
   const handleImportFile = async () => {
     if (!currentProject) return;
+
     try {
-      await createProjectFileFromImport(currentProject.id);
+      const imported = await createProjectFileFromImport(currentProject.id);
+
+      if (imported) {
+        Alert.alert('File Imported', `"${imported.name}" was added to this project.`);
+      }
     } catch (err) {
-      if (err instanceof FileSizeLimitError) {
-        Alert.alert('File Too Large', err.message);
+      if (err instanceof FileSizeLimitError || err instanceof UnsupportedFileTypeError) {
+        Alert.alert('Import Failed', err.message);
+      } else if (err instanceof Error) {
+        Alert.alert('Import Failed', err.message);
       } else {
-        Alert.alert('Import Failed', 'Could not read the file. Please try another file.');
+        Alert.alert('Import Failed', 'Could not read the file. Please try another text file.');
       }
     }
   };
@@ -273,6 +391,38 @@ Consider pacing, tension building, and character development.`;
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={90}
     >
+      <View style={[styles.threadBar, { borderBottomColor: colors.border }]}>
+        <TouchableOpacity
+          style={[styles.threadSelector, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => setThreadPickerVisible(true)}
+          disabled={loadingThreads}
+        >
+          <View style={styles.threadSelectorText}>
+            <Text style={[styles.threadLabel, { color: colors.textSecondary }]}>Current Chat</Text>
+            <Text style={[styles.threadTitle, { color: colors.text }]} numberOfLines={1}>
+              {currentThread?.title || (loadingThreads ? 'Loading chats...' : 'Main Chat')}
+            </Text>
+          </View>
+          <ChevronDown size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.threadQuickButton, { backgroundColor: colors.primaryLight }]}
+          onPress={openNewThreadModal}
+        >
+          <Plus size={16} color={colors.primary} />
+          <Text style={[styles.threadQuickButtonText, { color: colors.primary }]}>New Chat</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.threadIconButton, { backgroundColor: colors.surfaceSecondary }]}
+          onPress={() => setThreadActionsVisible(true)}
+          disabled={!currentThread}
+        >
+          <MoreVertical size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
       {/* Quick Actions */}
       {messages.length === 0 && !isLoading && (
         <View style={styles.quickActionsContainer}>
@@ -287,7 +437,7 @@ Consider pacing, tension building, and character development.`;
                 onPress={() => handleQuickAction(action)}
                 disabled={isLoading}
               >
-                <Sparkles size={16} color={colors.primary} />
+                <Sparkles size={16} color={colors.secondary} />
                 <Text style={[styles.quickActionText, { color: colors.text }]}>
                   {action.label}
                 </Text>
@@ -301,7 +451,7 @@ Consider pacing, tension building, and character development.`;
       <ScrollView
         ref={scrollViewRef}
         style={styles.messagesContainer}
-        contentContainerStyle={styles.messagesContent}
+        contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -360,6 +510,7 @@ Consider pacing, tension building, and character development.`;
           multiline
           returnKeyType="default"
           blurOnSubmit={false}
+          editable={!!currentThread && !isLoading}
         />
         <TouchableOpacity
           style={[
@@ -367,7 +518,7 @@ Consider pacing, tension building, and character development.`;
             { backgroundColor: inputText.trim() ? colors.primary : colors.border },
           ]}
           onPress={() => handleSendMessage()}
-          disabled={!inputText.trim() || isLoading}
+          disabled={!inputText.trim() || isLoading || !currentThread}
         >
           <Send size={20} color={inputText.trim() ? '#FFFFFF' : colors.textTertiary} />
         </TouchableOpacity>
@@ -375,7 +526,13 @@ Consider pacing, tension building, and character development.`;
 
       {/* Action buttons */}
       <View style={styles.actionButtons}>
-        <TouchableOpacity style={styles.actionButton} onPress={() => setSystemPromptModalVisible(true)}>
+        <TouchableOpacity
+          style={styles.actionButton}
+          onPress={() => {
+            setSystemPrompt(currentProject.systemPrompt);
+            setSystemPromptModalVisible(true);
+          }}
+        >
           <Settings size={18} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Prompt</Text>
         </TouchableOpacity>
@@ -456,7 +613,7 @@ Consider pacing, tension building, and character development.`;
                 style={[styles.quickActionCard, { backgroundColor: colors.surface }]}
                 onPress={() => handleQuickAction(action)}
               >
-                <Sparkles size={20} color={colors.primary} />
+                <Sparkles size={16} color={colors.secondary} />
                 <Text style={[styles.quickActionCardText, { color: colors.text }]}>
                   {action.label}
                 </Text>
@@ -524,7 +681,7 @@ Consider pacing, tension building, and character development.`;
           <FilesPanel
             files={files}
             onAddFile={handleImportFile}
-            onDeleteFile={deleteFile}
+            onDeleteFile={deleteProjectFile}
             onToggleFile={(id, enabled) => updateFile(id, { enabled })}
             onChangeMode={(id, mode) => updateFile(id, { includeMode: mode })}
             onLoadChunks={loadFileChunks}
@@ -577,6 +734,91 @@ Consider pacing, tension building, and character development.`;
             </View>
           </View>
           <Button title="Save" onPress={handleSaveSystemPrompt} style={styles.savePromptButton} />
+        </Modal>
+
+        <Modal
+          visible={threadPickerVisible}
+          onClose={() => setThreadPickerVisible(false)}
+          title="Project Chats"
+        >
+          <Text style={[styles.modalDescription, { color: colors.textSecondary }]}>
+            Switch between separate conversations inside this project.
+          </Text>
+          <View style={styles.threadList}>
+            {threads.map((thread) => {
+              const isActive = thread.id === currentThread?.id;
+              return (
+                <TouchableOpacity
+                  key={thread.id}
+                  style={[
+                    styles.threadListItem,
+                    {
+                      backgroundColor: isActive ? colors.primaryLight : colors.surfaceSecondary,
+                      borderColor: isActive ? colors.primary : colors.border,
+                    },
+                  ]}
+                  onPress={() => handleSelectThread(thread)}
+                >
+                  <View style={styles.threadListText}>
+                    <Text style={[styles.threadListTitle, { color: isActive ? colors.primary : colors.text }]} numberOfLines={1}>
+                      {thread.title}
+                    </Text>
+                    <Text style={[styles.threadListDate, { color: colors.textSecondary }]}>
+                      Updated {formatDate(thread.updatedAt)}
+                    </Text>
+                  </View>
+                  {isActive ? (
+                    <Text style={[styles.threadActiveBadge, { color: colors.primary }]}>Active</Text>
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Button title="New Chat" onPress={openNewThreadModal} style={styles.threadModalButton} />
+        </Modal>
+
+        <Modal
+          visible={threadActionsVisible}
+          onClose={() => setThreadActionsVisible(false)}
+          title="Manage Chat"
+        >
+          <Text style={[styles.modalDescription, { color: colors.textSecondary }]}>
+            {currentThread ? `Adjust settings for "${currentThread.title}".` : 'Choose a chat first.'}
+          </Text>
+          <Button title="Rename Chat" onPress={openRenameThreadModal} disabled={!currentThread} style={styles.threadModalButton} />
+          <Button
+            title="Delete Chat"
+            onPress={handleDeleteCurrentThread}
+            variant="danger"
+            disabled={!currentThread}
+            style={styles.threadModalButton}
+          />
+        </Modal>
+
+        <Modal
+          visible={threadEditorVisible}
+          onClose={() => {
+            setThreadEditorVisible(false);
+            setEditingThreadId(null);
+            setThreadTitleDraft('');
+          }}
+          title={editingThreadId ? 'Rename Chat' : 'New Chat'}
+        >
+          <Text style={[styles.modalLabel, { color: colors.text }]}>Chat Title</Text>
+          <Input
+            value={threadTitleDraft}
+            onChangeText={setThreadTitleDraft}
+            placeholder="e.g., Chapter 7 ideas"
+            autoFocus
+            returnKeyType="done"
+            onSubmitEditing={handleSaveThread}
+            containerStyle={styles.modalInput}
+          />
+          <Button
+            title={editingThreadId ? 'Save Changes' : 'Create Chat'}
+            onPress={handleSaveThread}
+            disabled={!threadTitleDraft.trim()}
+          />
         </Modal>
       </View>
     </>
@@ -774,6 +1016,91 @@ const styles = StyleSheet.create({
   // Chat styles
   chatContainer: {
     flex: 1,
+  },
+  threadBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+  },
+  threadSelector: {
+    flex: 1,
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+  },
+  threadSelectorText: {
+    flex: 1,
+    marginRight: 12,
+  },
+  threadLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  threadTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  threadQuickButton: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+  },
+  threadQuickButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  threadIconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  threadList: {
+    gap: 10,
+    marginBottom: 16,
+  },
+  threadListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+  },
+  threadListText: {
+    flex: 1,
+  },
+  threadListTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  threadListDate: {
+    fontSize: 13,
+  },
+  threadActiveBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  threadModalButton: {
+    marginTop: 8,
   },
   quickActionsContainer: {
     padding: 16,
