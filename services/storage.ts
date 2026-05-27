@@ -97,6 +97,48 @@ export async function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Pr
   return newMessage;
 }
 
+export async function updateMessage(id: string, updates: Partial<Message>): Promise<void> {
+  const allMessages = await getAllMessages();
+  const index = allMessages.findIndex(message => message.id === id);
+  if (index === -1) return;
+
+  const currentMessage = allMessages[index];
+  allMessages[index] = {
+    ...currentMessage,
+    ...updates,
+    id: currentMessage.id,
+    projectId: currentMessage.projectId,
+    threadId: currentMessage.threadId,
+    createdAt: currentMessage.createdAt,
+  };
+
+  await saveMessages(allMessages);
+  await updateThread(currentMessage.threadId, {});
+  await touchProject(currentMessage.projectId);
+}
+
+export async function truncateThreadMessages(threadId: string, fromMessageId: string, inclusive = true): Promise<void> {
+  const threadMessages = await getThreadMessages(threadId);
+  const cutoffIndex = threadMessages.findIndex(message => message.id === fromMessageId);
+  if (cutoffIndex === -1) return;
+
+  const idsToRemove = new Set(
+    threadMessages
+      .slice(inclusive ? cutoffIndex : cutoffIndex + 1)
+      .map(message => message.id)
+  );
+
+  const allMessages = await getAllMessages();
+  await saveMessages(allMessages.filter(message => !idsToRemove.has(message.id)));
+
+  const threads = await getAllThreads();
+  const thread = threads.find(item => item.id === threadId);
+  await updateThread(threadId, {});
+  if (thread) {
+    await touchProject(thread.projectId);
+  }
+}
+
 export async function clearProjectMessages(projectId: string): Promise<void> {
   const allMessages = await getAllMessages();
   await saveMessages(allMessages.filter(m => m.projectId !== projectId));

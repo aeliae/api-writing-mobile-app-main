@@ -13,7 +13,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Plus, MoveVertical as MoreVertical, Trash2, CreditCard as Edit2 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
-import { Button, Input, Modal, EmptyState, Card, LoadingIndicator } from '@/components';
+import { Button, Input, Modal, EmptyState, LoadingIndicator } from '@/components';
 import { formatDate } from '@/utils/helpers';
 import { Project } from '@/types';
 

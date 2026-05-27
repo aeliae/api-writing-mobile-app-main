@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Book, Settings, Pen } from 'lucide-react-native';
+import { Book, Settings } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { View, StyleSheet, Platform } from 'react-native';
 

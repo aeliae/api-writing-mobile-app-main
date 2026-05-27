@@ -3,7 +3,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { AppProvider } from '@/contexts/AppContext';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
-import { useFonts, Cormorant_400Regular, Cormorant_500Medium, Cormorant_600SemiBold } from '@expo-google-fonts/cormorant';
+import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from '@expo-google-fonts/inter';
+import { Cormorant_400Regular } from '@expo-google-fonts/cormorant';
 
 function RootLayoutContent() {
   const { colors, isDark } = useTheme();
@@ -31,7 +32,16 @@ function RootLayoutContent() {
 
 export default function RootLayout() {
   useFrameworkReady();
-  useFonts({ Cormorant_400Regular, Cormorant_500Medium, Cormorant_600SemiBold })
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Cormorant_400Regular,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
 
   return (
     <AppProvider>
