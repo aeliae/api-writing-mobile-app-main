@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { Project, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings } from '@/types';
+import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings } from '@/types';
 import * as storage from '@/services/storage';
-import { pickAndReadFile, FileSizeLimitError } from '@/utils/fileImport';
+import { pickAndReadFile } from '@/utils/fileImport';
 import { normalizeFileText, chunkText, extractKeywords, createLocalSummary } from '@/utils/fileProcessing';
 
 interface AppContextType {
@@ -10,16 +10,26 @@ interface AppContextType {
   currentProject: Project | null;
   loadingProjects: boolean;
   loadProjects: () => Promise<void>;
-  selectProject: (project: Project | null) => void;
+  selectProject: (project: Project | null) => Promise<void>;
   createProject: (name: string, systemPrompt?: string) => Promise<Project>;
   updateProject: (id: string, updates: Partial<Project>) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
 
+  // Threads
+  threads: ChatThread[];
+  currentThread: ChatThread | null;
+  loadingThreads: boolean;
+  loadThreads: (projectId: string) => Promise<ChatThread[]>;
+  selectThread: (thread: ChatThread | null) => Promise<void>;
+  createThread: (projectId: string, title?: string) => Promise<ChatThread>;
+  updateThread: (id: string, updates: Partial<ChatThread>) => Promise<void>;
+  deleteThread: (id: string) => Promise<void>;
+
   // Messages
   messages: Message[];
   loadingMessages: boolean;
-  loadMessages: (projectId: string) => Promise<void>;
-  clearMessages: (projectId: string) => Promise<void>;
+  loadMessages: (projectId: string, threadId: string) => Promise<void>;
+  clearMessages: (threadId: string) => Promise<void>;
 
   // Memories
   memories: MemoryEntry[];
@@ -53,6 +63,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [loadingProjects, setLoadingProjects] = useState(false);
 
+  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [currentThread, setCurrentThread] = useState<ChatThread | null>(null);
+  const [loadingThreads, setLoadingThreads] = useState(false);
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
@@ -73,18 +87,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoadingProjects(true);
     try {
       const loadedProjects = await storage.getProjects();
-      setProjects(loadedProjects.sort((a, b) =>
+      const sortedProjects = loadedProjects.sort((a, b) =>
         new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-      ));
+      );
+      setProjects(sortedProjects);
+      setCurrentProject(prev => prev ? sortedProjects.find(project => project.id === prev.id) || prev : null);
     } finally {
       setLoadingProjects(false);
     }
   }, []);
 
-  const loadMessages = useCallback(async (projectId: string) => {
+  const loadThreads = useCallback(async (projectId: string): Promise<ChatThread[]> => {
+    setLoadingThreads(true);
+    try {
+      let loadedThreads = await storage.getProjectThreads(projectId);
+      if (loadedThreads.length === 0) {
+        const mainThread = await storage.createThread(projectId, 'Main Chat');
+        loadedThreads = [mainThread];
+      }
+      setThreads(loadedThreads);
+      return loadedThreads;
+    } finally {
+      setLoadingThreads(false);
+    }
+  }, []);
+
+  const loadMessages = useCallback(async (projectId: string, threadId: string) => {
     setLoadingMessages(true);
     try {
-      const loadedMessages = await storage.getMessages(projectId);
+      const loadedMessages = await storage.getMessages(projectId, threadId);
       setMessages(loadedMessages);
     } finally {
       setLoadingMessages(false);
@@ -111,19 +142,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const selectProject = useCallback((project: Project | null) => {
+  const selectThread = useCallback(async (thread: ChatThread | null) => {
+    setCurrentThread(thread);
+    if (thread) {
+      await loadMessages(thread.projectId, thread.id);
+    } else {
+      setMessages([]);
+    }
+  }, [loadMessages]);
+
+  const selectProject = useCallback(async (project: Project | null) => {
     setCurrentProject(project);
     if (project) {
-      loadMessages(project.id);
-      loadMemories(project.id);
-      loadFiles(project.id);
+      const loadedThreads = await loadThreads(project.id);
+      const nextThread = loadedThreads[0] || null;
+      setCurrentThread(nextThread);
+      await Promise.all([
+        nextThread ? loadMessages(project.id, nextThread.id) : Promise.resolve().then(() => setMessages([])),
+        loadMemories(project.id),
+        loadFiles(project.id),
+      ]);
     } else {
+      setThreads([]);
+      setCurrentThread(null);
       setMessages([]);
       setMemories([]);
       setFiles([]);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadFiles, loadMemories, loadMessages, loadThreads]);
 
   const createProject = useCallback(async (name: string, systemPrompt?: string) => {
     const project = await storage.createProject(name, systemPrompt);
@@ -144,16 +190,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await loadProjects();
     if (currentProject?.id === id) {
       setCurrentProject(null);
+      setThreads([]);
+      setCurrentThread(null);
       setMessages([]);
       setMemories([]);
       setFiles([]);
     }
   }, [loadProjects, currentProject]);
 
-  const clearMessages = useCallback(async (projectId: string) => {
-    await storage.clearProjectMessages(projectId);
-    await loadMessages(projectId);
-  }, [loadMessages]);
+  const createThread = useCallback(async (projectId: string, title?: string) => {
+    const thread = await storage.createThread(projectId, title);
+    const loadedThreads = await loadThreads(projectId);
+    const nextThread = loadedThreads.find(item => item.id === thread.id) || thread;
+    if (currentProject?.id === projectId) {
+      await selectThread(nextThread);
+      await loadProjects();
+    }
+    return nextThread;
+  }, [currentProject, loadProjects, loadThreads, selectThread]);
+
+  const updateThread = useCallback(async (id: string, updates: Partial<ChatThread>) => {
+    await storage.updateThread(id, updates);
+    if (!currentProject) return;
+
+    const loadedThreads = await loadThreads(currentProject.id);
+    const nextCurrentThread = currentThread ? loadedThreads.find(item => item.id === currentThread.id) || null : null;
+    setCurrentThread(nextCurrentThread);
+    await loadProjects();
+  }, [currentProject, currentThread, loadProjects, loadThreads]);
+
+  const deleteThread = useCallback(async (id: string) => {
+    const targetThread = threads.find(thread => thread.id === id);
+    if (!targetThread) return;
+
+    await storage.deleteThread(id);
+    const loadedThreads = await loadThreads(targetThread.projectId);
+    const nextThread = loadedThreads[0] || null;
+
+    if (currentProject?.id === targetThread.projectId) {
+      setCurrentThread(nextThread);
+      if (nextThread) {
+        await loadMessages(targetThread.projectId, nextThread.id);
+      } else {
+        setMessages([]);
+      }
+      await loadProjects();
+    }
+  }, [currentProject, loadMessages, loadProjects, loadThreads, threads]);
+
+  const clearMessages = useCallback(async (threadId: string) => {
+    const thread = threads.find(item => item.id === threadId) || currentThread;
+    await storage.clearThreadMessages(threadId);
+    if (thread) {
+      await loadMessages(thread.projectId, thread.id);
+      await loadThreads(thread.projectId);
+      await loadProjects();
+    } else {
+      setMessages([]);
+    }
+  }, [currentThread, loadMessages, loadProjects, loadThreads, threads]);
 
   const createMemory = useCallback(async (projectId: string, title: string, content: string) => {
     const memory = await storage.createMemory(projectId, title, content);
@@ -242,6 +337,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     createProject,
     updateProject,
     deleteProject,
+    threads,
+    currentThread,
+    loadingThreads,
+    loadThreads,
+    selectThread,
+    createThread,
+    updateThread,
+    deleteThread,
     messages,
     loadingMessages,
     loadMessages,
