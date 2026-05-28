@@ -27,6 +27,7 @@ import {
   FolderOpen,
   Plus,
   X,
+  RotateCcw,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
@@ -46,9 +47,12 @@ interface ChatMessageProps {
   message: Message;
   colors: any;
   isUser: boolean;
+  isLastAssistant?: boolean;
+  onRegenerate?: () => void;
+  isLoading?: boolean;
 }
 
-function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
+function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, isLoading }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
@@ -111,11 +115,28 @@ function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
         )}
       </View>
       <Text style={{
-        fontFamily: 'Cormorant_400Regular',  // or just 'Cormorant' if loaded differently
+        fontFamily: 'Cormorant_400Regular',
         fontSize: 16.5,
-        lineHeight: 28,  // ~1.72 ratio
+        lineHeight: 28,
         color: colors.proseAiText,
       }}>{message.content}</Text>
+      {isLastAssistant && onRegenerate && (
+        <TouchableOpacity
+          onPress={onRegenerate}
+          disabled={isLoading}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            marginTop: 12,
+            alignSelf: 'flex-start',
+            opacity: isLoading ? 0.4 : 0.6,
+          }}
+        >
+          <RotateCcw size={12} color={colors.textTertiary} />
+          <Text style={{ fontSize: 11, color: colors.textTertiary }}>Regenerate</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -136,6 +157,8 @@ export default function ProjectScreen() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamingContent, setStreamingContent] = useState('');
+  const [pendingUserMessage, setPendingUserMessage] = useState('');
   const [currentTab, setCurrentTab] = useState<TabType>('chat');
   const [toolsTab, setToolsTab] = useState<ToolsSubTab>('outline');
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
@@ -160,7 +183,7 @@ export default function ProjectScreen() {
     }, [id])
   );
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom when messages or streaming content changes
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => {
@@ -168,6 +191,12 @@ export default function ProjectScreen() {
       }, 100);
     }
   }, [messages.length]);
+
+  useEffect(() => {
+    if (streamingContent || pendingUserMessage) {
+      scrollViewRef.current?.scrollToEnd({ animated: false });
+    }
+  }, [streamingContent, pendingUserMessage]);
 
   const handleSendMessage = async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
@@ -180,16 +209,14 @@ export default function ProjectScreen() {
 
     setInputText('');
     setIsLoading(true);
+    setStreamingContent('');
+    setPendingUserMessage(messageText);
     setError(null);
 
     try {
-      // Build conversation history (excluding system messages)
       const conversationHistory = messages
         .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        }));
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
       const response = await sendMessage(
         currentProject.id,
@@ -197,7 +224,8 @@ export default function ProjectScreen() {
         messageText,
         systemPrompt,
         conversationHistory,
-        contextPrompt ? undefined : undefined
+        undefined,
+        { onChunk: (partial) => setStreamingContent(partial) }
       );
 
       setLastUsage({
@@ -206,9 +234,8 @@ export default function ProjectScreen() {
         total: response.usage.totalTokens,
       });
 
-      // Reload messages
       await loadMessages(currentProject.id, currentThread.id);
-      await loadProjects(); // Update project's updatedAt
+      await loadProjects();
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -217,6 +244,66 @@ export default function ProjectScreen() {
       }
     } finally {
       setIsLoading(false);
+      setStreamingContent('');
+      setPendingUserMessage('');
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (!currentProject || !currentThread || isLoading) return;
+
+    const lastAssistantIndex = messages.map(m => m.role).lastIndexOf('assistant');
+    if (lastAssistantIndex === -1) return;
+    const lastAssistantMsg = messages[lastAssistantIndex];
+
+    const messagesBeforeAssistant = messages.slice(0, lastAssistantIndex);
+    const lastUserMsgIndex = messagesBeforeAssistant.map(m => m.role).lastIndexOf('user');
+    if (lastUserMsgIndex === -1) return;
+    const lastUserMsg = messagesBeforeAssistant[lastUserMsgIndex];
+
+    const historyMessages = messagesBeforeAssistant
+      .slice(0, lastUserMsgIndex)
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+    await storage.deleteMessage(lastAssistantMsg.id);
+    await loadMessages(currentProject.id, currentThread.id);
+
+    setIsLoading(true);
+    setStreamingContent('');
+    setError(null);
+
+    try {
+      const response = await sendMessage(
+        currentProject.id,
+        currentThread.id,
+        lastUserMsg.content,
+        systemPrompt,
+        historyMessages,
+        undefined,
+        {
+          skipUserMessage: true,
+          onChunk: (partial) => setStreamingContent(partial),
+        }
+      );
+
+      setLastUsage({
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+        total: response.usage.totalTokens,
+      });
+
+      await loadMessages(currentProject.id, currentThread.id);
+      await loadProjects();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError('An unexpected error occurred. Please try again.');
+      }
+    } finally {
+      setIsLoading(false);
+      setStreamingContent('');
     }
   };
 
@@ -391,7 +478,7 @@ Consider pacing, tension building, and character development.`;
         </ScrollView>
       </View>
       {/* Quick Actions */}
-      {messages.length === 0 && !isLoading && (
+      {messages.length === 0 && !isLoading && !pendingUserMessage && (
         <View style={styles.quickActionsContainer}>
           <Text style={[styles.quickActionsTitle, { color: colors.textSecondary }]}>
             Quick Start
@@ -431,23 +518,67 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
 
-        {messages.length === 0 && !isLoading ? (
+        {messages.length === 0 && !pendingUserMessage ? (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
         ) : (
-          messages.map((message) => (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              colors={colors}
-              isUser={message.role === 'user'}
-            />
-          ))
+          <>
+            {messages.map((message, index) => {
+              const isLastAssistant =
+                message.role === 'assistant' &&
+                !messages.slice(index + 1).some(m => m.role === 'assistant') &&
+                !streamingContent &&
+                !isLoading;
+              return (
+                <ChatMessage
+                  key={message.id}
+                  message={message}
+                  colors={colors}
+                  isUser={message.role === 'user'}
+                  isLastAssistant={isLastAssistant}
+                  onRegenerate={isLastAssistant ? handleRegenerate : undefined}
+                  isLoading={isLoading}
+                />
+              );
+            })}
+
+            {pendingUserMessage ? (
+              <ChatMessage
+                key="pending-user"
+                message={{
+                  id: 'pending-user',
+                  projectId: currentProject.id,
+                  threadId: currentThread?.id || '',
+                  role: 'user',
+                  content: pendingUserMessage,
+                  createdAt: new Date().toISOString(),
+                }}
+                colors={colors}
+                isUser={true}
+              />
+            ) : null}
+
+            {streamingContent ? (
+              <ChatMessage
+                key="streaming"
+                message={{
+                  id: 'streaming',
+                  projectId: currentProject.id,
+                  threadId: currentThread?.id || '',
+                  role: 'assistant',
+                  content: streamingContent,
+                  createdAt: new Date().toISOString(),
+                }}
+                colors={colors}
+                isUser={false}
+              />
+            ) : null}
+          </>
         )}
 
-        {isLoading && (
+        {isLoading && !streamingContent && (
           <View style={[styles.loadingMessage, { backgroundColor: colors.surface }]}>
             <ActivityIndicator color={colors.primary} size="small" />
             <Text style={[styles.loadingText, { color: colors.textSecondary }]}>

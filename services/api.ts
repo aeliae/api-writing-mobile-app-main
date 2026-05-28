@@ -206,13 +206,19 @@ async function buildProjectKnowledgeContext(
   return result;
 }
 
+interface SendMessageOptions {
+  onChunk?: (accumulatedContent: string) => void;
+  skipUserMessage?: boolean;
+}
+
 export async function sendMessage(
   projectId: string,
   threadId: string,
   userMessage: string,
   systemPrompt: string,
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
-  context?: string
+  context?: string,
+  options?: SendMessageOptions
 ): Promise<ChatResponse> {
   const settings = await getSettings();
 
@@ -240,6 +246,9 @@ export async function sendMessage(
   }
   messages.push({ role: 'user', content: userMessage });
 
+  const useStreaming = !!options?.onChunk;
+  const onChunk = options?.onChunk;
+
   try {
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
@@ -253,6 +262,7 @@ export async function sendMessage(
         model: settings.selectedModel,
         messages,
         max_tokens: 10000,
+        stream: useStreaming,
       }),
     });
 
@@ -265,12 +275,61 @@ export async function sendMessage(
       throw new ApiError(errorMessage, 'API_ERROR', response.status);
     }
 
-    const data: OpenRouterResponse = await response.json();
+    let assistantContent = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let totalTokens = 0;
 
-    const assistantContent = data.choices[0]?.message?.content || '';
-    const promptTokens = data.usage?.prompt_tokens || 0;
-    const completionTokens = data.usage?.completion_tokens || 0;
-    const totalTokens = data.usage?.total_tokens || promptTokens + completionTokens;
+    if (useStreaming && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = '';
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const payload = trimmed.slice(6);
+            if (payload === '[DONE]') continue;
+
+            try {
+              const chunk = JSON.parse(payload);
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (delta && onChunk) {
+                accumulated += delta;
+                onChunk(accumulated);
+              }
+              if (chunk.usage) {
+                promptTokens = chunk.usage.prompt_tokens ?? 0;
+                completionTokens = chunk.usage.completion_tokens ?? 0;
+              }
+            } catch {
+              // ignore malformed chunks
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      assistantContent = accumulated;
+      totalTokens = promptTokens + completionTokens;
+    } else {
+      const data: OpenRouterResponse = await response.json();
+      assistantContent = data.choices[0]?.message?.content || '';
+      promptTokens = data.usage?.prompt_tokens || 0;
+      completionTokens = data.usage?.completion_tokens || 0;
+      totalTokens = data.usage?.total_tokens || promptTokens + completionTokens;
+    }
 
     const usage: ApiUsage = { promptTokens, completionTokens, totalTokens, cost: undefined };
 
@@ -282,7 +341,9 @@ export async function sendMessage(
 
     await recordApiUsage(usage);
 
-    await addMessage({ projectId, threadId, role: 'user', content: userMessage, tokens: promptTokens });
+    if (!options?.skipUserMessage) {
+      await addMessage({ projectId, threadId, role: 'user', content: userMessage, tokens: promptTokens });
+    }
     const savedAssistantMessage = await addMessage({
       projectId, threadId, role: 'assistant', content: assistantContent, tokens: completionTokens,
     });
