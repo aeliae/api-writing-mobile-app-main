@@ -1,53 +1,53 @@
-import { Tabs } from 'expo-router';
-import { Book, Settings } from 'lucide-react-native';
-import { useTheme } from '@/contexts/ThemeContext';
-import { View, StyleSheet, Platform } from 'react-native';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useFrameworkReady } from '@/hooks/useFrameworkReady';
+import { AppProvider } from '@/contexts/AppContext';
+import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
+import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from '@expo-google-fonts/inter';
+import { Cormorant_400Regular } from '@expo-google-fonts/cormorant';
 
-export default function TabLayout() {
-  const { colors } = useTheme();
+function RootLayoutContent() {
+  const { colors, isDark } = useTheme();
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarStyle: {
-            backgroundColor: colors.tabBar,
-            borderTopColor: colors.tabBarBorder,
-            borderTopWidth: 1,
-            height: Platform.OS === 'ios' ? 88 : 64,
-            paddingBottom: Platform.OS === 'ios' ? 28 : 8,
-            paddingTop: 8,
-          },
-          tabBarActiveTintColor: colors.tabBarActive,
-          tabBarInactiveTintColor: colors.tabBarInactive,
-          tabBarLabelStyle: {
-            fontSize: 12,
-            fontWeight: '500',
-          },
-        }}
-      >
-        <Tabs.Screen
-          name="index"
+    <>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="project/[id]"
           options={{
-            title: 'Projects',
-            tabBarIcon: ({ size, color }) => <Book size={size} color={color} />,
+            headerShown: true,
+            headerBackTitle: 'Back',
+            headerStyle: { backgroundColor: colors.background },
+            headerTintColor: colors.text,
+            headerTitleStyle: { color: colors.text },
           }}
         />
-        <Tabs.Screen
-          name="settings"
-          options={{
-            title: 'Settings',
-            tabBarIcon: ({ size, color }) => <Settings size={size} color={color} />,
-          }}
-        />
-      </Tabs>
-    </View>
+        <Stack.Screen name="+not-found" />
+      </Stack>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+    </>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
+export default function RootLayout() {
+  useFrameworkReady();
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Cormorant_400Regular,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
+  return (
+    <AppProvider>
+      <ThemeProvider>
+        <RootLayoutContent />
+      </ThemeProvider>
+    </AppProvider>
+  );
+}
