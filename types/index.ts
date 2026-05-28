@@ -9,9 +9,18 @@ export interface Project {
   storyOutline: string;
 }
 
+export interface ChatThread {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Message {
   id: string;
   projectId: string;
+  threadId: string;
   role: 'system' | 'user' | 'assistant';
   content: string;
   createdAt: string;

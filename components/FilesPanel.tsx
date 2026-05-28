@@ -288,7 +288,7 @@ export function FilesPanel({
             <View style={[styles.warningBox, { borderColor: colors.warning }]}>
               <AlertCircle size={14} color={colors.warning} />
               <Text style={[styles.warningText, { color: colors.warning }]}>
-                Some files are large. Use "Summary only" mode for rarely-needed reference material to save tokens.
+                Some files are large. Use &quot;Summary only&quot; mode for rarely-needed reference material to save tokens.
               </Text>
             </View>
           )}

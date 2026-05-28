@@ -1,15 +1,107 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Project, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, ApiUsage } from '@/types';
+import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, ApiUsage } from '@/types';
 import { generateId } from '@/utils/helpers';
 
 const KEYS = {
   PROJECTS: 'cw_projects',
+  THREADS: 'cw_threads',
   MESSAGES: 'cw_messages',
   MEMORIES: 'cw_memories',
   PROJECT_FILES: 'cw_project_files',
   PROJECT_FILE_CHUNKS: 'cw_project_file_chunks',
   SETTINGS: 'cw_settings',
 };
+
+const DEFAULT_THREAD_TITLE = 'Main Chat';
+
+async function touchProject(projectId: string, updatedAt = new Date().toISOString()): Promise<void> {
+  const projects = await getProjects();
+  const index = projects.findIndex(p => p.id === projectId);
+  if (index === -1) return;
+
+  projects[index] = { ...projects[index], updatedAt };
+  await saveProjects(projects);
+}
+
+async function getRawThreads(): Promise<ChatThread[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.THREADS);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error('Error loading threads:', error);
+    return [];
+  }
+}
+
+async function saveThreads(threads: ChatThread[]): Promise<void> {
+  await AsyncStorage.setItem(KEYS.THREADS, JSON.stringify(threads));
+}
+
+async function getRawMessages(): Promise<Message[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.MESSAGES);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error('Error loading messages:', error);
+    return [];
+  }
+}
+
+async function migrateLegacyMessagesToThreads(): Promise<void> {
+  const [projects, existingThreads, existingMessages] = await Promise.all([
+    getProjects(),
+    getRawThreads(),
+    getRawMessages(),
+  ]);
+
+  if (existingMessages.length === 0) return;
+
+  const threadMap = new Map(existingThreads.map(thread => [thread.id, thread]));
+  const projectThreadMap = new Map<string, ChatThread[]>();
+  for (const thread of existingThreads) {
+    const threads = projectThreadMap.get(thread.projectId) || [];
+    threads.push(thread);
+    projectThreadMap.set(thread.projectId, threads);
+  }
+
+  let threadsChanged = false;
+  let messagesChanged = false;
+  const nextThreads = [...existingThreads];
+  const nextMessages = existingMessages.map((message) => {
+    if (message.threadId && threadMap.has(message.threadId)) {
+      return message;
+    }
+
+    let thread = (projectThreadMap.get(message.projectId) || [])[0];
+
+    if (!thread) {
+      const project = projects.find(p => p.id === message.projectId);
+      const fallbackDate = message.createdAt || new Date().toISOString();
+      thread = {
+        id: generateId(),
+        projectId: message.projectId,
+        title: DEFAULT_THREAD_TITLE,
+        createdAt: fallbackDate,
+        updatedAt: project?.updatedAt || fallbackDate,
+      };
+      nextThreads.push(thread);
+      threadMap.set(thread.id, thread);
+      projectThreadMap.set(message.projectId, [thread]);
+      threadsChanged = true;
+    }
+
+    messagesChanged = true;
+    return { ...message, threadId: thread.id };
+  });
+
+  if (threadsChanged) {
+    await saveThreads(nextThreads);
+  }
+
+  if (messagesChanged) {
+    await saveMessages(nextMessages);
+  }
+}
 
 // Project operations
 export async function getProjects(): Promise<Project[]> {
@@ -53,6 +145,8 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
 export async function deleteProject(id: string): Promise<void> {
   const projects = await getProjects();
   await saveProjects(projects.filter(p => p.id !== id));
+  const threads = await getAllThreads();
+  await saveThreads(threads.filter(t => t.projectId !== id));
   const messages = await getAllMessages();
   await saveMessages(messages.filter(msg => msg.projectId !== id));
   const memories = await getAllMemories();
@@ -63,25 +157,78 @@ export async function deleteProject(id: string): Promise<void> {
   await saveFileChunks(chunks.filter(c => c.projectId !== id));
 }
 
+// Thread operations
+export async function getAllThreads(): Promise<ChatThread[]> {
+  await migrateLegacyMessagesToThreads();
+  return getRawThreads();
+}
+
+export async function getProjectThreads(projectId: string): Promise<ChatThread[]> {
+  const threads = await getAllThreads();
+  return threads
+    .filter(thread => thread.projectId === projectId)
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export async function createThread(projectId: string, title = DEFAULT_THREAD_TITLE): Promise<ChatThread> {
+  const threads = await getAllThreads();
+  const timestamp = new Date().toISOString();
+  const newThread: ChatThread = {
+    id: generateId(),
+    projectId,
+    title: title.trim() || DEFAULT_THREAD_TITLE,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  threads.push(newThread);
+  await saveThreads(threads);
+  await touchProject(projectId, timestamp);
+  return newThread;
+}
+
+export async function updateThread(id: string, updates: Partial<ChatThread>): Promise<void> {
+  const threads = await getAllThreads();
+  const index = threads.findIndex(thread => thread.id === id);
+  if (index === -1) return;
+
+  const updatedAt = new Date().toISOString();
+  threads[index] = {
+    ...threads[index],
+    ...updates,
+    title: (updates.title ?? threads[index].title).trim() || DEFAULT_THREAD_TITLE,
+    updatedAt,
+  };
+
+  await saveThreads(threads);
+  await touchProject(threads[index].projectId, updatedAt);
+}
+
+export async function deleteThread(id: string): Promise<void> {
+  const threads = await getAllThreads();
+  const thread = threads.find(item => item.id === id);
+  if (!thread) return;
+
+  await saveThreads(threads.filter(item => item.id !== id));
+  const messages = await getAllMessages();
+  await saveMessages(messages.filter(message => message.threadId !== id));
+  await touchProject(thread.projectId);
+}
+
 // Message operations
 export async function getAllMessages(): Promise<Message[]> {
-  try {
-    const data = await AsyncStorage.getItem(KEYS.MESSAGES);
-    return data ? JSON.parse(data) : [];
-  } catch (error) {
-    console.error('Error loading messages:', error);
-    return [];
-  }
+  await migrateLegacyMessagesToThreads();
+  return getRawMessages();
 }
 
 export async function saveMessages(messages: Message[]): Promise<void> {
   await AsyncStorage.setItem(KEYS.MESSAGES, JSON.stringify(messages));
 }
 
-export async function getMessages(projectId: string): Promise<Message[]> {
+export async function getMessages(projectId: string, threadId?: string): Promise<Message[]> {
   const allMessages = await getAllMessages();
   return allMessages
-    .filter(m => m.projectId === projectId)
+    .filter(m => m.projectId === projectId && (!threadId || m.threadId === threadId))
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
@@ -94,6 +241,8 @@ export async function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Pr
   };
   allMessages.push(newMessage);
   await saveMessages(allMessages);
+  await updateThread(message.threadId, {});
+  await touchProject(message.projectId, newMessage.createdAt);
   return newMessage;
 }
 
@@ -142,6 +291,24 @@ export async function truncateThreadMessages(threadId: string, fromMessageId: st
 export async function clearProjectMessages(projectId: string): Promise<void> {
   const allMessages = await getAllMessages();
   await saveMessages(allMessages.filter(m => m.projectId !== projectId));
+  await touchProject(projectId);
+}
+
+export async function getThreadMessages(threadId: string): Promise<Message[]> {
+  const allMessages = await getAllMessages();
+  return allMessages
+    .filter(message => message.threadId === threadId)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+export async function clearThreadMessages(threadId: string): Promise<void> {
+  const threads = await getAllThreads();
+  const thread = threads.find(item => item.id === threadId);
+  const allMessages = await getAllMessages();
+  await saveMessages(allMessages.filter(message => message.threadId !== threadId));
+  if (thread) {
+    await updateThread(threadId, {});
+  }
 }
 
 // Memory operations
@@ -361,11 +528,16 @@ export async function deleteFileChunks(fileId: string): Promise<void> {
 }
 
 // Export conversation as text
-export async function exportConversation(projectId: string): Promise<string> {
-  const project = (await getProjects()).find(p => p.id === projectId);
-  const messages = await getMessages(projectId);
+export async function exportConversation(projectId: string, threadId: string): Promise<string> {
+  const [project, threads, messages] = await Promise.all([
+    getProjects().then(items => items.find(p => p.id === projectId)),
+    getAllThreads(),
+    getThreadMessages(threadId),
+  ]);
+  const thread = threads.find(item => item.id === threadId);
 
   let text = `Project: ${project?.name || 'Unknown'}\n`;
+  text += `Chat: ${thread?.title || DEFAULT_THREAD_TITLE}\n`;
   text += `Exported: ${new Date().toLocaleString()}\n`;
   text += `========================================\n\n`;
 
