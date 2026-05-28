@@ -248,6 +248,40 @@ export async function sendMessage(
 
   const useStreaming = !!options?.onChunk;
   const onChunk = options?.onChunk;
+  let assistantContent = '';
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  const processSseLine = (
+    line: string,
+    accumulated: string
+  ): { accumulated: string; done: boolean } => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data: ')) return { accumulated, done: false };
+
+    const payload = trimmed.slice(6);
+    if (payload === '[DONE]') return { accumulated, done: true };
+
+    try {
+      const chunk = JSON.parse(payload);
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta && onChunk) {
+        accumulated += delta;
+        onChunk(accumulated);
+      } else if (delta) {
+        accumulated += delta;
+      }
+      if (chunk.usage) {
+        promptTokens = chunk.usage.prompt_tokens ?? 0;
+        completionTokens = chunk.usage.completion_tokens ?? 0;
+        totalTokens = chunk.usage.total_tokens ?? promptTokens + completionTokens;
+      }
+    } catch {
+      // ignore malformed chunks
+    }
+
+    return { accumulated, done: false };
+  };
 
   try {
     const response = await fetch(OPENROUTER_API_URL, {
@@ -275,11 +309,6 @@ export async function sendMessage(
       throw new ApiError(errorMessage, 'API_ERROR', response.status);
     }
 
-    let assistantContent = '';
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let totalTokens = 0;
-
     if (useStreaming && response.body) {
       // Progressive streaming (modern React Native / web)
       const reader = response.body.getReader();
@@ -288,6 +317,8 @@ export async function sendMessage(
       let buffer = '';
 
       try {
+        let streamComplete = false;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -297,33 +328,27 @@ export async function sendMessage(
           buffer = lines.pop() ?? '';
 
           for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) continue;
-            const payload = trimmed.slice(6);
-            if (payload === '[DONE]') continue;
-
-            try {
-              const chunk = JSON.parse(payload);
-              const delta = chunk.choices?.[0]?.delta?.content;
-              if (delta && onChunk) {
-                accumulated += delta;
-                onChunk(accumulated);
-              }
-              if (chunk.usage) {
-                promptTokens = chunk.usage.prompt_tokens ?? 0;
-                completionTokens = chunk.usage.completion_tokens ?? 0;
-              }
-            } catch {
-              // ignore malformed chunks
+            const result = processSseLine(line, accumulated);
+            accumulated = result.accumulated;
+            if (result.done) {
+              streamComplete = true;
+              break;
             }
           }
+
+          if (streamComplete) break;
+        }
+
+        if (buffer.trim()) {
+          const result = processSseLine(buffer, accumulated);
+          accumulated = result.accumulated;
         }
       } finally {
         reader.releaseLock();
       }
 
       assistantContent = accumulated;
-      totalTokens = promptTokens + completionTokens;
+      totalTokens = totalTokens || promptTokens + completionTokens;
     } else if (useStreaming) {
       // Streaming was requested but response.body is unavailable (older RN/Expo).
       // Read the full SSE text at once and parse it.
@@ -331,26 +356,13 @@ export async function sendMessage(
       let accumulated = '';
 
       for (const line of text.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        const payload = trimmed.slice(6);
-        if (payload === '[DONE]') continue;
-
-        try {
-          const chunk = JSON.parse(payload);
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) accumulated += delta;
-          if (chunk.usage) {
-            promptTokens = chunk.usage.prompt_tokens ?? 0;
-            completionTokens = chunk.usage.completion_tokens ?? 0;
-          }
-        } catch {
-          // ignore malformed chunks
-        }
+        const result = processSseLine(line, accumulated);
+        accumulated = result.accumulated;
+        if (result.done) break;
       }
 
       assistantContent = accumulated;
-      totalTokens = promptTokens + completionTokens;
+      totalTokens = totalTokens || promptTokens + completionTokens;
       if (onChunk) onChunk(assistantContent);
     } else {
       const data: OpenRouterResponse = await response.json();
