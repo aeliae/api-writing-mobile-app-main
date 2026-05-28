@@ -14,6 +14,24 @@ const KEYS = {
 
 const DEFAULT_THREAD_TITLE = 'Main Chat';
 
+function parseStoredArray<T>(data: string | null): T[] {
+  if (!data) return [];
+
+  const parsed = JSON.parse(data);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseStoredObject<T extends object>(data: string | null, fallback: T): T {
+  if (!data) return fallback;
+
+  const parsed = JSON.parse(data);
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    return fallback;
+  }
+
+  return { ...fallback, ...parsed };
+}
+
 async function touchProject(projectId: string, updatedAt = new Date().toISOString()): Promise<void> {
   const projects = await getProjects();
   const index = projects.findIndex(p => p.id === projectId);
@@ -26,8 +44,7 @@ async function touchProject(projectId: string, updatedAt = new Date().toISOStrin
 async function getRawThreads(): Promise<ChatThread[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.THREADS);
-    const parsed = data ? JSON.parse(data) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    return parseStoredArray<ChatThread>(data);
   } catch (error) {
     console.error('Error loading threads:', error);
     return [];
@@ -41,8 +58,7 @@ async function saveThreads(threads: ChatThread[]): Promise<void> {
 async function getRawMessages(): Promise<Message[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.MESSAGES);
-    const parsed = data ? JSON.parse(data) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    return parseStoredArray<Message>(data);
   } catch (error) {
     console.error('Error loading messages:', error);
     return [];
@@ -109,8 +125,7 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
 export async function getProjects(): Promise<Project[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECTS);
-    const parsed = data ? JSON.parse(data) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    return parseStoredArray<Project>(data);
   } catch (error) {
     console.error('Error loading projects:', error);
     return [];
@@ -328,7 +343,7 @@ export async function clearThreadMessages(threadId: string): Promise<void> {
 export async function getAllMemories(): Promise<MemoryEntry[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.MEMORIES);
-    return data ? JSON.parse(data) : [];
+    return parseStoredArray<MemoryEntry>(data);
   } catch (error) {
     console.error('Error loading memories:', error);
     return [];
@@ -378,19 +393,19 @@ export async function deleteMemory(id: string): Promise<void> {
 
 // Settings operations
 export async function getSettings(): Promise<Settings> {
-  try {
-    const data = await AsyncStorage.getItem(KEYS.SETTINGS);
-    if (data) {
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('Error loading settings:', error);
-  }
-  return {
+  const defaultSettings: Settings = {
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
     theme: 'system',
   };
+
+  try {
+    const data = await AsyncStorage.getItem(KEYS.SETTINGS);
+    return parseStoredObject<Settings>(data, defaultSettings);
+  } catch (error) {
+    console.error('Error loading settings:', error);
+  }
+  return defaultSettings;
 }
 
 export async function saveSettings(settings: Partial<Settings>): Promise<void> {
@@ -422,7 +437,7 @@ export async function recordApiUsage(usage: ApiUsage): Promise<void> {
 export async function getAllFiles(): Promise<ProjectFile[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECT_FILES);
-    return data ? JSON.parse(data) : [];
+    return parseStoredArray<ProjectFile>(data);
   } catch (error) {
     console.error('Error loading project files:', error);
     return [];
@@ -481,7 +496,7 @@ export async function deleteProjectFile(id: string): Promise<void> {
 export async function getAllFileChunks(): Promise<ProjectFileChunk[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECT_FILE_CHUNKS);
-    return data ? JSON.parse(data) : [];
+    return parseStoredArray<ProjectFileChunk>(data);
   } catch (error) {
     console.error('Error loading file chunks:', error);
     return [];
