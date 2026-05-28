@@ -208,6 +208,7 @@ async function buildProjectKnowledgeContext(
 
 export async function sendMessage(
   projectId: string,
+  threadId: string,
   userMessage: string,
   systemPrompt: string,
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
@@ -281,9 +282,9 @@ export async function sendMessage(
 
     await recordApiUsage(usage);
 
-    await addMessage({ projectId, role: 'user', content: userMessage, tokens: promptTokens });
+    await addMessage({ projectId, threadId, role: 'user', content: userMessage, tokens: promptTokens });
     const savedAssistantMessage = await addMessage({
-      projectId, role: 'assistant', content: assistantContent, tokens: completionTokens,
+      projectId, threadId, role: 'assistant', content: assistantContent, tokens: completionTokens,
     });
 
     return { message: savedAssistantMessage, usage };
