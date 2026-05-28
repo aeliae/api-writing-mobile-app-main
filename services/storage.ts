@@ -26,7 +26,8 @@ async function touchProject(projectId: string, updatedAt = new Date().toISOStrin
 async function getRawThreads(): Promise<ChatThread[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.THREADS);
-    return data ? JSON.parse(data) : [];
+    const parsed = data ? JSON.parse(data) : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     console.error('Error loading threads:', error);
     return [];
@@ -40,7 +41,8 @@ async function saveThreads(threads: ChatThread[]): Promise<void> {
 async function getRawMessages(): Promise<Message[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.MESSAGES);
-    return data ? JSON.parse(data) : [];
+    const parsed = data ? JSON.parse(data) : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     console.error('Error loading messages:', error);
     return [];
@@ -107,7 +109,8 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
 export async function getProjects(): Promise<Project[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECTS);
-    return data ? JSON.parse(data) : [];
+    const parsed = data ? JSON.parse(data) : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     console.error('Error loading projects:', error);
     return [];

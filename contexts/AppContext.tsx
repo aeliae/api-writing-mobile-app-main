@@ -9,7 +9,7 @@ interface AppContextType {
   projects: Project[];
   currentProject: Project | null;
   loadingProjects: boolean;
-  loadProjects: () => Promise<void>;
+  loadProjects: () => Promise<Project[]>;
   selectProject: (project: Project | null) => Promise<void>;
   createProject: (name: string, systemPrompt?: string) => Promise<Project>;
   updateProject: (id: string, updates: Partial<Project>) => Promise<void>;
@@ -83,7 +83,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
   const [loadingSettings, setLoadingSettings] = useState(false);
 
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async (): Promise<Project[]> => {
     setLoadingProjects(true);
     try {
       const loadedProjects = await storage.getProjects();
@@ -92,6 +92,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       setProjects(sortedProjects);
       setCurrentProject(prev => prev ? sortedProjects.find(project => project.id === prev.id) || prev : null);
+      return sortedProjects;
     } finally {
       setLoadingProjects(false);
     }
