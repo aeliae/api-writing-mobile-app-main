@@ -281,6 +281,7 @@ export async function sendMessage(
     let totalTokens = 0;
 
     if (useStreaming && response.body) {
+      // Progressive streaming (modern React Native / web)
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let accumulated = '';
@@ -323,6 +324,34 @@ export async function sendMessage(
 
       assistantContent = accumulated;
       totalTokens = promptTokens + completionTokens;
+    } else if (useStreaming) {
+      // Streaming was requested but response.body is unavailable (older RN/Expo).
+      // Read the full SSE text at once and parse it.
+      const text = await response.text();
+      let accumulated = '';
+
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const payload = trimmed.slice(6);
+        if (payload === '[DONE]') continue;
+
+        try {
+          const chunk = JSON.parse(payload);
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (delta) accumulated += delta;
+          if (chunk.usage) {
+            promptTokens = chunk.usage.prompt_tokens ?? 0;
+            completionTokens = chunk.usage.completion_tokens ?? 0;
+          }
+        } catch {
+          // ignore malformed chunks
+        }
+      }
+
+      assistantContent = accumulated;
+      totalTokens = promptTokens + completionTokens;
+      if (onChunk) onChunk(assistantContent);
     } else {
       const data: OpenRouterResponse = await response.json();
       assistantContent = data.choices[0]?.message?.content || '';
