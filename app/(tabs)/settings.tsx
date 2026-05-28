@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,14 +8,14 @@ import {
   Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { Key, Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink } from 'lucide-react-native';
+import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Card, CardHeader, LoadingIndicator } from '@/components';
 import { AVAILABLE_MODELS } from '@/types';
 
 export default function SettingsScreen() {
-  const { colors, mode, setThemeMode, isDark } = useTheme();
+  const { colors, mode, setThemeMode } = useTheme();
   const { settings, loadingSettings, loadSettings, updateSettings } = useApp();
 
   const [apiKey, setApiKey] = useState('');
@@ -25,26 +25,25 @@ export default function SettingsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadSettings();
-      setApiKey(settings.openRouterApiKey);
-      setSelectedModel(settings.selectedModel);
+      void loadSettings();
     }, [loadSettings])
   );
 
-  // Sync state when settings load
-  useFocusEffect(
-    useCallback(() => {
+  useEffect(() => {
+    const syncTimer = setTimeout(() => {
       setApiKey(settings.openRouterApiKey);
       setSelectedModel(settings.selectedModel);
-    }, [settings])
-  );
+    }, 0);
+
+    return () => clearTimeout(syncTimer);
+  }, [settings]);
 
   const handleSaveApiKey = async () => {
     setSaving(true);
     try {
       await updateSettings({ openRouterApiKey: apiKey });
       Alert.alert('Success', 'API key saved successfully');
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to save API key');
     } finally {
       setSaving(false);
@@ -56,7 +55,7 @@ export default function SettingsScreen() {
     await updateSettings({ selectedModel: modelId });
   };
 
-  const handleThemeChange = async (newMode: 'light' | 'dark' | 'system') => {
+  const handleThemeChange = (newMode: 'light' | 'dark' | 'system') => {
     setThemeMode(newMode);
   };
 
