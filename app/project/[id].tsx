@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,10 @@ import {
   Share,
   ActivityIndicator,
   Dimensions,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
 } from 'react-native';
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Send,
@@ -22,7 +24,6 @@ import {
   Settings,
   Brain,
   Pen,
-  ChevronDown,
   Sparkles,
   FolderOpen,
   Plus,
@@ -34,7 +35,7 @@ import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
 import { formatTokens, formatDate } from '@/utils/helpers';
-import { Message, Project, ProjectFile, QUICK_ACTIONS } from '@/types';
+import { Message, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
@@ -50,9 +51,10 @@ interface ChatMessageProps {
   isLastAssistant?: boolean;
   onRegenerate?: () => void;
   isLoading?: boolean;
+  isStreaming?: boolean;
 }
 
-function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, isLoading }: ChatMessageProps) {
+function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, isLoading, isStreaming }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
@@ -119,7 +121,17 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, i
         fontSize: 16.5,
         lineHeight: 28,
         color: colors.proseAiText,
-      }}>{message.content}</Text>
+      }}>
+        {message.content || (isStreaming ? 'Thinking...' : '')}
+      </Text>
+      {isStreaming && !message.content && (
+        <View style={styles.streamingIndicator}>
+          <ActivityIndicator color={colors.primary} size="small" />
+          <Text style={[styles.streamingIndicatorText, { color: colors.textSecondary }]}>
+            Generating response...
+          </Text>
+        </View>
+      )}
       {isLastAssistant && onRegenerate && (
         <TouchableOpacity
           onPress={onRegenerate}
@@ -143,22 +155,19 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, i
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
   const { colors } = useTheme();
   const {
-    projects, loadProjects, selectProject, currentProject,
+    loadProjects, selectProject, currentProject,
     threads, currentThread, createThread, selectThread, deleteThread,
     messages, loadMessages, clearMessages,
-    memories, loadMemories,
-    files, loadingFiles, loadFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
+    files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
   } = useApp();
 
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [pendingUserMessage, setPendingUserMessage] = useState('');
+  const [liveMessages, setLiveMessages] = useState<Message[]>([]);
   const [currentTab, setCurrentTab] = useState<TabType>('chat');
   const [toolsTab, setToolsTab] = useState<ToolsSubTab>('outline');
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
@@ -167,8 +176,26 @@ export default function ProjectScreen() {
 
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
-  const safeThreads = Array.isArray(threads) ? threads : [];
-  const safeMessages = Array.isArray(messages) ? messages : [];
+  const shouldAutoScrollRef = useRef(true);
+  const safeThreads = useMemo(() => (Array.isArray(threads) ? threads : []), [threads]);
+  const safeMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
+  const displayedMessages = [...safeMessages, ...liveMessages];
+  const hasLiveAssistantMessage = liveMessages.some((message) => message.role === 'assistant');
+
+  const scrollToBottom = useCallback((animated = false) => {
+    if (shouldAutoScrollRef.current) {
+      scrollViewRef.current?.scrollToEnd({ animated });
+    }
+  }, []);
+
+  const createLiveMessage = useCallback((role: 'user' | 'assistant', content = ''): Message => ({
+    id: `live-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    projectId: currentProject?.id || '',
+    threadId: currentThread?.id || '',
+    role,
+    content,
+    createdAt: new Date().toISOString(),
+  }), [currentProject?.id, currentThread?.id]);
 
   // Find and select project
   useFocusEffect(
@@ -189,18 +216,24 @@ export default function ProjectScreen() {
   useEffect(() => {
     if (safeMessages.length > 0) {
       setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: false });
+        scrollToBottom(false);
       }, 100);
     }
-  }, [safeMessages.length]);
+  }, [safeMessages.length, scrollToBottom]);
 
   useEffect(() => {
-    if (streamingContent || pendingUserMessage) {
-      scrollViewRef.current?.scrollToEnd({ animated: false });
+    if (liveMessages.length > 0) {
+      scrollToBottom(false);
     }
-  }, [streamingContent, pendingUserMessage]);
+  }, [liveMessages, scrollToBottom]);
 
-  const handleSendMessage = async (contextPrompt?: string) => {
+  const handleMessagesScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    shouldAutoScrollRef.current = distanceFromBottom < 120;
+  }, []);
+
+  const handleSendMessage = useCallback(async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
     if (!messageText || !currentProject || !currentThread || isLoading) return;
 
@@ -211,14 +244,24 @@ export default function ProjectScreen() {
 
     setInputText('');
     setIsLoading(true);
-    setStreamingContent('');
-    setPendingUserMessage(messageText);
     setError(null);
+    shouldAutoScrollRef.current = true;
+
+    const liveUserMessage = createLiveMessage('user', messageText);
+    const liveAssistantMessage = createLiveMessage('assistant');
+    setLiveMessages([liveUserMessage, liveAssistantMessage]);
 
     try {
       const conversationHistory = safeMessages
         .filter((m) => m.role !== 'system')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+      await storage.addMessage({
+        projectId: currentProject.id,
+        threadId: currentThread.id,
+        role: 'user',
+        content: messageText,
+      });
 
       const response = await sendMessage(
         currentProject.id,
@@ -227,7 +270,13 @@ export default function ProjectScreen() {
         systemPrompt,
         conversationHistory,
         undefined,
-        { onChunk: (partial) => setStreamingContent(partial) }
+        {
+          skipUserMessage: true,
+          onChunk: (partial) => setLiveMessages([
+            liveUserMessage,
+            { ...liveAssistantMessage, content: partial },
+          ]),
+        }
       );
 
       setLastUsage({
@@ -237,8 +286,11 @@ export default function ProjectScreen() {
       });
 
       await loadMessages(currentProject.id, currentThread.id);
+      setLiveMessages([]);
       await loadProjects();
     } catch (err) {
+      await loadMessages(currentProject.id, currentThread.id);
+      setLiveMessages([]);
       if (err instanceof ApiError) {
         setError(err.message);
       } else {
@@ -246,12 +298,21 @@ export default function ProjectScreen() {
       }
     } finally {
       setIsLoading(false);
-      setStreamingContent('');
-      setPendingUserMessage('');
     }
-  };
+  }, [
+    createLiveMessage,
+    currentProject,
+    currentThread,
+    inputText,
+    isLoading,
+    loadMessages,
+    loadProjects,
+    safeMessages,
+    settings.openRouterApiKey,
+    systemPrompt,
+  ]);
 
-  const handleRegenerate = async () => {
+  const handleRegenerate = useCallback(async () => {
     if (!currentProject || !currentThread || isLoading) return;
 
     const lastAssistantIndex = safeMessages.map(m => m.role).lastIndexOf('assistant');
@@ -268,12 +329,12 @@ export default function ProjectScreen() {
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-    await storage.deleteMessage(lastAssistantMsg.id);
-    await loadMessages(currentProject.id, currentThread.id);
-
     setIsLoading(true);
-    setStreamingContent('');
     setError(null);
+    shouldAutoScrollRef.current = true;
+
+    const liveAssistantMessage = createLiveMessage('assistant');
+    setLiveMessages([liveAssistantMessage]);
 
     try {
       const response = await sendMessage(
@@ -285,7 +346,7 @@ export default function ProjectScreen() {
         undefined,
         {
           skipUserMessage: true,
-          onChunk: (partial) => setStreamingContent(partial),
+          onChunk: (partial) => setLiveMessages([{ ...liveAssistantMessage, content: partial }]),
         }
       );
 
@@ -295,9 +356,12 @@ export default function ProjectScreen() {
         total: response.usage.totalTokens,
       });
 
+      await storage.deleteMessage(lastAssistantMsg.id);
       await loadMessages(currentProject.id, currentThread.id);
+      setLiveMessages([]);
       await loadProjects();
     } catch (err) {
+      setLiveMessages([]);
       if (err instanceof ApiError) {
         setError(err.message);
       } else {
@@ -305,13 +369,21 @@ export default function ProjectScreen() {
       }
     } finally {
       setIsLoading(false);
-      setStreamingContent('');
     }
-  };
+  }, [
+    createLiveMessage,
+    currentProject,
+    currentThread,
+    isLoading,
+    loadMessages,
+    loadProjects,
+    safeMessages,
+    systemPrompt,
+  ]);
 
-  const handleQuickAction = (action: typeof QUICK_ACTIONS[0]) => {
-    handleSendMessage(action.prompt);
-  };
+  const handleQuickAction = useCallback((action: typeof QUICK_ACTIONS[0]) => {
+    void handleSendMessage(action.prompt);
+  }, [handleSendMessage]);
 
   const handleClearHistory = () => {
     Alert.alert(
@@ -452,9 +524,14 @@ Consider pacing, tension building, and character development.`;
                 <TouchableOpacity
                   style={[
                     styles.threadChip,
-                    { backgroundColor: isActive ? colors.primaryLight : colors.surfaceSecondary, borderColor: isActive ? colors.primary : colors.border },
+                    {
+                      backgroundColor: isActive ? colors.primaryLight : colors.surfaceSecondary,
+                      borderColor: isActive ? colors.primary : colors.border,
+                      opacity: isLoading ? 0.6 : 1,
+                    },
                   ]}
                   onPress={() => { selectThread(thread); setLastUsage(null); }}
+                  disabled={isLoading}
                 >
                   <Text style={[styles.threadChipText, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
                     {thread.title || 'Chat'}
@@ -462,6 +539,7 @@ Consider pacing, tension building, and character development.`;
                   {safeThreads.length > 1 && (
                     <TouchableOpacity
                       onPress={() => handleDeleteThread(thread.id)}
+                      disabled={isLoading}
                       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                     >
                       <X size={12} color={isActive ? colors.primary : colors.textTertiary} />
@@ -472,15 +550,16 @@ Consider pacing, tension building, and character development.`;
             );
           })}
           <TouchableOpacity
-            style={[styles.threadAddButton, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+            style={[styles.threadAddButton, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, opacity: isLoading ? 0.6 : 1 }]}
             onPress={handleCreateThread}
+            disabled={isLoading}
           >
             <Plus size={16} color={colors.textSecondary} />
           </TouchableOpacity>
         </ScrollView>
       </View>
       {/* Quick Actions */}
-      {safeMessages.length === 0 && !isLoading && !pendingUserMessage && (
+      {safeMessages.length === 0 && liveMessages.length === 0 && !isLoading && (
         <View style={styles.quickActionsContainer}>
           <Text style={[styles.quickActionsTitle, { color: colors.textSecondary }]}>
             Quick Start
@@ -510,6 +589,8 @@ Consider pacing, tension building, and character development.`;
         contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onScroll={handleMessagesScroll}
+        scrollEventThrottle={16}
       >
         {error && (
           <View style={[styles.errorBanner, { backgroundColor: colors.errorLight }]}>
@@ -520,18 +601,19 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
 
-        {safeMessages.length === 0 && !pendingUserMessage ? (
+        {displayedMessages.length === 0 ? (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
         ) : (
           <>
-            {safeMessages.map((message, index) => {
+            {displayedMessages.map((message, index) => {
+              const isLiveMessage = liveMessages.some((liveMessage) => liveMessage.id === message.id);
               const isLastAssistant =
                 message.role === 'assistant' &&
-                !safeMessages.slice(index + 1).some(m => m.role === 'assistant') &&
-                !streamingContent &&
+                !displayedMessages.slice(index + 1).some(m => m.role === 'assistant') &&
+                !hasLiveAssistantMessage &&
                 !isLoading;
               return (
                 <ChatMessage
@@ -542,51 +624,11 @@ Consider pacing, tension building, and character development.`;
                   isLastAssistant={isLastAssistant}
                   onRegenerate={isLastAssistant ? handleRegenerate : undefined}
                   isLoading={isLoading}
+                  isStreaming={isLiveMessage && message.role === 'assistant'}
                 />
               );
             })}
-
-            {pendingUserMessage ? (
-              <ChatMessage
-                key="pending-user"
-                message={{
-                  id: 'pending-user',
-                  projectId: currentProject.id,
-                  threadId: currentThread?.id || '',
-                  role: 'user',
-                  content: pendingUserMessage,
-                  createdAt: new Date().toISOString(),
-                }}
-                colors={colors}
-                isUser={true}
-              />
-            ) : null}
-
-            {streamingContent ? (
-              <ChatMessage
-                key="streaming"
-                message={{
-                  id: 'streaming',
-                  projectId: currentProject.id,
-                  threadId: currentThread?.id || '',
-                  role: 'assistant',
-                  content: streamingContent,
-                  createdAt: new Date().toISOString(),
-                }}
-                colors={colors}
-                isUser={false}
-              />
-            ) : null}
           </>
-        )}
-
-        {isLoading && !streamingContent && (
-          <View style={[styles.loadingMessage, { backgroundColor: colors.surface }]}>
-            <ActivityIndicator color={colors.primary} size="small" />
-            <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
-              AI is typing...
-            </Text>
-          </View>
         )}
 
         {lastUsage && !isLoading && (
@@ -625,15 +667,15 @@ Consider pacing, tension building, and character development.`;
 
       {/* Action buttons */}
       <View style={styles.actionButtons}>
-        <TouchableOpacity style={styles.actionButton} onPress={() => setSystemPromptModalVisible(true)}>
+        <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={() => setSystemPromptModalVisible(true)} disabled={isLoading}>
           <Settings size={18} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Prompt</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton} onPress={handleClearHistory}>
+        <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={handleClearHistory} disabled={isLoading}>
           <Trash2 size={18} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Clear</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton} onPress={handleExport}>
+        <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={handleExport} disabled={isLoading}>
           <Download size={18} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Export</Text>
         </TouchableOpacity>
@@ -1121,6 +1163,15 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
   },
+  streamingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  streamingIndicatorText: {
+    fontSize: 13,
+  },
   loadingMessage: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1187,6 +1238,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+  },
+  actionButtonDisabled: {
+    opacity: 0.5,
   },
   actionButtonText: {
     fontSize: 13,
