@@ -301,6 +301,16 @@ export async function getThreadMessages(threadId: string): Promise<Message[]> {
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
+export async function deleteMessage(id: string): Promise<void> {
+  const allMessages = await getAllMessages();
+  const message = allMessages.find(m => m.id === id);
+  if (!message) return;
+
+  await saveMessages(allMessages.filter(m => m.id !== id));
+  await updateThread(message.threadId, {});
+  await touchProject(message.projectId);
+}
+
 export async function clearThreadMessages(threadId: string): Promise<void> {
   const threads = await getAllThreads();
   const thread = threads.find(item => item.id === threadId);
