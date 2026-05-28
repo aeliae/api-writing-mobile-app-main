@@ -102,6 +102,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoadingThreads(true);
     try {
       let loadedThreads = await storage.getProjectThreads(projectId);
+      loadedThreads = Array.isArray(loadedThreads) ? loadedThreads : [];
       if (loadedThreads.length === 0) {
         const mainThread = await storage.createThread(projectId, 'Main Chat');
         loadedThreads = [mainThread];
@@ -117,7 +118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoadingMessages(true);
     try {
       const loadedMessages = await storage.getMessages(projectId, threadId);
-      setMessages(loadedMessages);
+      setMessages(Array.isArray(loadedMessages) ? loadedMessages : []);
     } finally {
       setLoadingMessages(false);
     }
@@ -127,7 +128,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoadingMemories(true);
     try {
       const all = await storage.getAllMemories();
-      setMemories(all.filter(m => m.projectId === projectId));
+      const safeMemories = Array.isArray(all) ? all : [];
+      setMemories(safeMemories.filter(m => m.projectId === projectId));
     } finally {
       setLoadingMemories(false);
     }
@@ -137,7 +139,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoadingFiles(true);
     try {
       const loadedFiles = await storage.getProjectFiles(projectId);
-      setFiles(loadedFiles);
+      setFiles(Array.isArray(loadedFiles) ? loadedFiles : []);
     } finally {
       setLoadingFiles(false);
     }
