@@ -5,11 +5,11 @@ Creative Writing Assistant is a mobile-friendly Expo app for writing with AI. It
 ## What the app does
 
 - Create and manage writing projects
-- Keep one separate chat history per project
+- Keep separate chats inside each project
 - Configure a custom system prompt per project
 - Store persistent memory notes for characters, plot points, lore, or reminders
 - Import text-based reference files and include them in AI requests automatically
-- Use built-in writing prompt starters for outlines, scene ideas, rewrites, dialogue, and continuation
+- Generate a saved story outline from your project context and use built-in prompt starters for scenes, rewrites, dialogue, and continuation
 - Export a conversation as plain text
 - Choose an OpenRouter model and switch between light, dark, and system theme modes
 
@@ -20,10 +20,11 @@ Creative Writing Assistant is a mobile-friendly Expo app for writing with AI. It
 Each project has its own:
 
 - Name
-- A single persistent chat history
+- Multiple chats
 - System prompt
 - Memory notes
 - Imported files
+- Saved outline
 
 Projects are stored locally and sorted by most recently updated.
 
@@ -32,7 +33,7 @@ Projects are stored locally and sorted by most recently updated.
 The main writing screen includes:
 
 - A mobile-first chat interface
-- One persistent conversation per project
+- Multiple persistent chats per project
 - Per-response token counts
 - Clear-history action
 - Export/share conversation action
@@ -79,7 +80,7 @@ This makes the app useful not just for fiction drafting, but also for working fr
 
 ### Tools
 
-The Tools tab provides prompt starters for common writing tasks, including:
+The Tools tab provides a saved outline generator plus prompt starters for common writing tasks, including:
 
 - Story outline generation
 - Scene suggestions
