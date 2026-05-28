@@ -172,15 +172,15 @@ export default function ProjectScreen() {
   useFocusEffect(
     useCallback(() => {
       if (id && typeof id === 'string') {
-        loadProjects().then(() => {
-          const project = projects.find((p) => p.id === id);
+        loadProjects().then((loadedProjects) => {
+          const project = loadedProjects.find((p) => p.id === id);
           if (project) {
             selectProject(project);
             setSystemPrompt(project.systemPrompt);
           }
         });
       }
-    }, [id])
+    }, [id, loadProjects, selectProject])
   );
 
   // Scroll to bottom when messages or streaming content changes
