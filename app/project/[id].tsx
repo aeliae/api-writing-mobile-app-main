@@ -167,6 +167,8 @@ export default function ProjectScreen() {
 
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
+  const safeThreads = Array.isArray(threads) ? threads : [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
 
   // Find and select project
   useFocusEffect(
@@ -176,7 +178,7 @@ export default function ProjectScreen() {
           const project = loadedProjects.find((p) => p.id === id);
           if (project) {
             selectProject(project);
-            setSystemPrompt(project.systemPrompt);
+            setSystemPrompt(project.systemPrompt || '');
           }
         });
       }
@@ -185,12 +187,12 @@ export default function ProjectScreen() {
 
   // Scroll to bottom when messages or streaming content changes
   useEffect(() => {
-    if (messages.length > 0) {
+    if (safeMessages.length > 0) {
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: false });
       }, 100);
     }
-  }, [messages.length]);
+  }, [safeMessages.length]);
 
   useEffect(() => {
     if (streamingContent || pendingUserMessage) {
@@ -214,7 +216,7 @@ export default function ProjectScreen() {
     setError(null);
 
     try {
-      const conversationHistory = messages
+      const conversationHistory = safeMessages
         .filter((m) => m.role !== 'system')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
@@ -252,11 +254,11 @@ export default function ProjectScreen() {
   const handleRegenerate = async () => {
     if (!currentProject || !currentThread || isLoading) return;
 
-    const lastAssistantIndex = messages.map(m => m.role).lastIndexOf('assistant');
+    const lastAssistantIndex = safeMessages.map(m => m.role).lastIndexOf('assistant');
     if (lastAssistantIndex === -1) return;
-    const lastAssistantMsg = messages[lastAssistantIndex];
+    const lastAssistantMsg = safeMessages[lastAssistantIndex];
 
-    const messagesBeforeAssistant = messages.slice(0, lastAssistantIndex);
+    const messagesBeforeAssistant = safeMessages.slice(0, lastAssistantIndex);
     const lastUserMsgIndex = messagesBeforeAssistant.map(m => m.role).lastIndexOf('user');
     if (lastUserMsgIndex === -1) return;
     const lastUserMsg = messagesBeforeAssistant[lastUserMsgIndex];
@@ -405,13 +407,13 @@ Consider pacing, tension building, and character development.`;
 
   const handleCreateThread = async () => {
     if (!currentProject) return;
-    const count = threads.length + 1;
+    const count = safeThreads.length + 1;
     await createThread(currentProject.id, `Chat ${count}`);
     setLastUsage(null);
   };
 
   const handleDeleteThread = (threadId: string) => {
-    if (threads.length <= 1) return;
+    if (safeThreads.length <= 1) return;
     Alert.alert(
       'Delete Chat',
       'Are you sure you want to delete this chat and all its messages?',
@@ -443,7 +445,7 @@ Consider pacing, tension building, and character development.`;
       {/* Thread Switcher */}
       <View style={[styles.threadSwitcher, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.threadSwitcherScroll}>
-          {threads.map((thread) => {
+          {safeThreads.map((thread) => {
             const isActive = currentThread?.id === thread.id;
             return (
               <View key={thread.id} style={styles.threadChipWrapper}>
@@ -457,7 +459,7 @@ Consider pacing, tension building, and character development.`;
                   <Text style={[styles.threadChipText, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
                     {thread.title || 'Chat'}
                   </Text>
-                  {threads.length > 1 && (
+                  {safeThreads.length > 1 && (
                     <TouchableOpacity
                       onPress={() => handleDeleteThread(thread.id)}
                       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
@@ -478,7 +480,7 @@ Consider pacing, tension building, and character development.`;
         </ScrollView>
       </View>
       {/* Quick Actions */}
-      {messages.length === 0 && !isLoading && !pendingUserMessage && (
+      {safeMessages.length === 0 && !isLoading && !pendingUserMessage && (
         <View style={styles.quickActionsContainer}>
           <Text style={[styles.quickActionsTitle, { color: colors.textSecondary }]}>
             Quick Start
@@ -518,17 +520,17 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
 
-        {messages.length === 0 && !pendingUserMessage ? (
+        {safeMessages.length === 0 && !pendingUserMessage ? (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
         ) : (
           <>
-            {messages.map((message, index) => {
+            {safeMessages.map((message, index) => {
               const isLastAssistant =
                 message.role === 'assistant' &&
-                !messages.slice(index + 1).some(m => m.role === 'assistant') &&
+                !safeMessages.slice(index + 1).some(m => m.role === 'assistant') &&
                 !streamingContent &&
                 !isLoading;
               return (
@@ -834,6 +836,7 @@ Consider pacing, tension building, and character development.`;
 // Memory Panel Component
 function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) {
   const { memories, loadMemories, createMemory, updateMemory, deleteMemory } = useApp();
+  const safeMemories = Array.isArray(memories) ? memories : [];
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -860,7 +863,7 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
     setContent('');
   };
 
-  const handleEdit = (memory: typeof memories[0]) => {
+  const handleEdit = (memory: typeof safeMemories[number]) => {
     setEditingId(memory.id);
     setTitle(memory.title);
     setContent(memory.content);
@@ -871,7 +874,7 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
     await updateMemory(id, { enabled: !enabled });
   };
 
-  const handleDelete = (memory: typeof memories[0]) => {
+  const handleDelete = (memory: typeof safeMemories[number]) => {
     Alert.alert(
       'Delete Memory',
       `Are you sure you want to delete "${memory.title}"?`,
@@ -901,14 +904,14 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
         Notes are automatically included with every AI message to provide context.
       </Text>
 
-      {memories.length === 0 ? (
+      {safeMemories.length === 0 ? (
         <EmptyState
           title="No memory notes"
           description="Add notes about characters, plot points, or world-building details"
         />
       ) : (
         <ScrollView style={styles.memoryList} contentContainerStyle={styles.memoryListContent}>
-          {memories.map((memory) => (
+          {safeMemories.map((memory) => (
             <TouchableOpacity
               key={memory.id}
               style={[
