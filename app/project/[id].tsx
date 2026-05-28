@@ -27,11 +27,13 @@ import {
   FolderOpen,
   Plus,
   MoreVertical,
+  RotateCcw,
+  X,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
-import { sendMessage, ApiError } from '@/services/api';
+import { requestMessageCompletion, ApiError, MessageCompletionResult } from '@/services/api';
 import { formatTokens, formatDate } from '@/utils/helpers';
 import { Message, ChatThread, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
@@ -46,6 +48,20 @@ interface ChatMessageProps {
   message: Message;
   colors: any;
   isUser: boolean;
+  canEdit?: boolean;
+  canRegenerate?: boolean;
+  disabled?: boolean;
+  onEdit?: (message: Message) => void;
+  onRegenerate?: (message: Message) => void;
+}
+
+interface MessageRewritePreview {
+  truncateFromMessageId: string;
+  truncateInclusive: boolean;
+  updatedMessage?: {
+    id: string;
+    content: string;
+  };
 }
 
 function createTemporaryMessage(
@@ -64,7 +80,37 @@ function createTemporaryMessage(
   };
 }
 
-function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
+function buildPreviewMessages(messages: Message[], preview: MessageRewritePreview | null): Message[] {
+  let nextMessages = messages;
+
+  if (preview) {
+    const cutoffIndex = messages.findIndex(message => message.id === preview.truncateFromMessageId);
+    if (cutoffIndex !== -1) {
+      nextMessages = messages.filter((_, index) =>
+        preview.truncateInclusive ? index < cutoffIndex : index <= cutoffIndex
+      );
+    }
+  }
+
+  if (!preview?.updatedMessage) return nextMessages;
+
+  return nextMessages.map(message =>
+    message.id === preview.updatedMessage?.id
+      ? { ...message, content: preview.updatedMessage.content }
+      : message
+  );
+}
+
+function ChatMessage({
+  message,
+  colors,
+  isUser,
+  canEdit,
+  canRegenerate,
+  disabled,
+  onEdit,
+  onRegenerate,
+}: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
@@ -89,6 +135,18 @@ function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
           lineHeight: 24,
           color: colors.proseUserText,
         }}>{message.content}</Text>
+        {canEdit && onEdit ? (
+          <View style={styles.messageActionRow}>
+            <TouchableOpacity
+              style={[styles.messageActionButton, { backgroundColor: colors.surfaceSecondary, opacity: disabled ? 0.6 : 1 }]}
+              onPress={() => onEdit(message)}
+              disabled={disabled}
+            >
+              <Pen size={14} color={colors.textSecondary} />
+              <Text style={[styles.messageActionText, { color: colors.textSecondary }]}>Edit & rerun</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -132,6 +190,18 @@ function ChatMessage({ message, colors, isUser }: ChatMessageProps) {
         lineHeight: 28,  // ~1.72 ratio
         color: colors.proseAiText,
       }}>{message.content}</Text>
+      {canRegenerate && onRegenerate ? (
+        <View style={styles.messageActionRow}>
+          <TouchableOpacity
+            style={[styles.messageActionButton, { backgroundColor: colors.surfaceSecondary, opacity: disabled ? 0.6 : 1 }]}
+            onPress={() => onRegenerate(message)}
+            disabled={disabled}
+          >
+            <RotateCcw size={14} color={colors.textSecondary} />
+            <Text style={[styles.messageActionText, { color: colors.textSecondary }]}>Regenerate</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -150,6 +220,8 @@ export default function ProjectScreen() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [messageRewritePreview, setMessageRewritePreview] = useState<MessageRewritePreview | null>(null);
   const [optimisticUserMessage, setOptimisticUserMessage] = useState<Message | null>(null);
   const [streamingAssistantText, setStreamingAssistantText] = useState('');
   const [currentTab, setCurrentTab] = useState<TabType>('chat');
@@ -162,10 +234,12 @@ export default function ProjectScreen() {
   const [threadEditorVisible, setThreadEditorVisible] = useState(false);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [threadTitleDraft, setThreadTitleDraft] = useState('');
+  const [generatingOutline, setGeneratingOutline] = useState(false);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const displayedMessages = buildPreviewMessages(messages, messageRewritePreview);
 
   useFocusEffect(
     useCallback(() => {
@@ -183,18 +257,123 @@ export default function ProjectScreen() {
   }, [currentProject?.id, id, projects, selectProject]);
 
   useEffect(() => {
-    if (messages.length > 0 || optimisticUserMessage || streamingAssistantText) {
+    if (displayedMessages.length > 0 || optimisticUserMessage || streamingAssistantText) {
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: false });
       }, 100);
     }
-  }, [messages.length, optimisticUserMessage, streamingAssistantText]);
+  }, [displayedMessages.length, optimisticUserMessage, streamingAssistantText]);
 
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
     };
   }, []);
+
+  const resetTransientThreadState = useCallback(() => {
+    setEditingMessageId(null);
+    setMessageRewritePreview(null);
+    setOptimisticUserMessage(null);
+    setStreamingAssistantText('');
+  }, []);
+
+  useEffect(() => {
+    const resetTimer = setTimeout(() => {
+      resetTransientThreadState();
+    }, 0);
+
+    return () => clearTimeout(resetTimer);
+  }, [currentThread?.id, resetTransientThreadState]);
+
+  const buildConversationHistory = useCallback((sourceMessages: Message[]) => {
+    return sourceMessages
+      .filter(message => message.role !== 'system')
+      .map(message => ({
+        role: message.role as 'user' | 'assistant',
+        content: message.content,
+      }));
+  }, []);
+
+  const refreshThreadState = useCallback(async (projectId: string, threadId: string) => {
+    await loadMessages(projectId, threadId);
+    await loadThreads(projectId);
+    await loadProjects();
+  }, [loadMessages, loadProjects, loadThreads]);
+
+  const runAssistantRequest = useCallback(async ({
+    userMessage,
+    conversationHistory,
+    showOptimisticUser,
+    preview,
+    onPersistSuccess,
+    onSuccess,
+  }: {
+    userMessage: string;
+    conversationHistory: { role: 'user' | 'assistant'; content: string }[];
+    showOptimisticUser: boolean;
+    preview?: MessageRewritePreview | null;
+    onPersistSuccess: (result: MessageCompletionResult) => Promise<void>;
+    onSuccess?: () => void;
+  }) => {
+    if (!currentProject || !currentThread) return;
+
+    setInputText('');
+    setIsLoading(true);
+    setError(null);
+    setLastUsage(null);
+    setStreamingAssistantText('');
+    setMessageRewritePreview(preview || null);
+    setOptimisticUserMessage(
+      showOptimisticUser
+        ? createTemporaryMessage(currentProject.id, currentThread.id, 'user', userMessage)
+        : null
+    );
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const result = await requestMessageCompletion(
+        currentProject.id,
+        currentThread.id,
+        userMessage,
+        systemPrompt,
+        conversationHistory,
+        undefined,
+        {
+          signal: controller.signal,
+          onChunk: (content) => {
+            setStreamingAssistantText(content);
+          },
+        }
+      );
+
+      await onPersistSuccess(result);
+      setLastUsage({
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        total: result.usage.totalTokens,
+      });
+      await refreshThreadState(currentProject.id, currentThread.id);
+      setOptimisticUserMessage(null);
+      setStreamingAssistantText('');
+      setMessageRewritePreview(null);
+      onSuccess?.();
+    } catch (err) {
+      setInputText(userMessage);
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError('An unexpected error occurred. Please try again.');
+      }
+      setOptimisticUserMessage(null);
+      setStreamingAssistantText('');
+      setMessageRewritePreview(null);
+    } finally {
+      abortControllerRef.current = null;
+      setIsLoading(false);
+    }
+  }, [currentProject, currentThread, refreshThreadState, systemPrompt]);
 
   const handleSendMessage = async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
@@ -205,76 +384,172 @@ export default function ProjectScreen() {
       return;
     }
 
-    setInputText('');
-    setIsLoading(true);
-    setError(null);
-    setLastUsage(null);
-    setStreamingAssistantText('');
+    const editingMessage = editingMessageId
+      ? messages.find(message => message.id === editingMessageId && message.role === 'user')
+      : null;
 
-    const tempUserMessage = createTemporaryMessage(
-      currentProject.id,
-      currentThread.id,
-      'user',
-      messageText
-    );
-    setOptimisticUserMessage(tempUserMessage);
+    if (editingMessage) {
+      const editingIndex = messages.findIndex(message => message.id === editingMessage.id);
+      const conversationHistory = buildConversationHistory(messages.slice(0, editingIndex));
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    try {
-      // Build conversation history (excluding system messages)
-      const conversationHistory = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        }));
-
-      const response = await sendMessage(
-        currentProject.id,
-        currentThread.id,
-        messageText,
-        systemPrompt,
+      await runAssistantRequest({
+        userMessage: messageText,
         conversationHistory,
-        contextPrompt ? undefined : undefined,
-        {
-          signal: controller.signal,
-          onChunk: (content) => {
-            setStreamingAssistantText(content);
+        showOptimisticUser: false,
+        preview: {
+          truncateFromMessageId: editingMessage.id,
+          truncateInclusive: false,
+          updatedMessage: {
+            id: editingMessage.id,
+            content: messageText,
           },
-        }
-      );
-
-      setLastUsage({
-        promptTokens: response.usage.promptTokens,
-        completionTokens: response.usage.completionTokens,
-        total: response.usage.totalTokens,
+        },
+        onPersistSuccess: async (result) => {
+          await storage.updateMessage(editingMessage.id, {
+            content: messageText,
+            tokens: result.usage.promptTokens,
+          });
+          await storage.truncateThreadMessages(currentThread.id, editingMessage.id, false);
+          await storage.addMessage({
+            projectId: currentProject.id,
+            threadId: currentThread.id,
+            role: 'assistant',
+            content: result.content,
+            tokens: result.usage.completionTokens,
+          });
+        },
+        onSuccess: () => {
+          setEditingMessageId(null);
+        },
       });
-
-      // Reload messages
-      await loadMessages(currentProject.id, currentThread.id);
-      await loadThreads(currentProject.id);
-      await loadProjects(); // Update project's updatedAt
-      setOptimisticUserMessage(null);
-      setStreamingAssistantText('');
-    } catch (err) {
-      setInputText(messageText);
-      if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError('An unexpected error occurred. Please try again.');
-      }
-      setOptimisticUserMessage(null);
-      setStreamingAssistantText('');
-    } finally {
-      abortControllerRef.current = null;
-      setIsLoading(false);
+      return;
     }
+
+    const conversationHistory = buildConversationHistory(messages);
+    await runAssistantRequest({
+      userMessage: messageText,
+      conversationHistory,
+      showOptimisticUser: true,
+      onPersistSuccess: async (result) => {
+        await storage.addMessage({
+          projectId: currentProject.id,
+          threadId: currentThread.id,
+          role: 'user',
+          content: messageText,
+          tokens: result.usage.promptTokens,
+        });
+        await storage.addMessage({
+          projectId: currentProject.id,
+          threadId: currentThread.id,
+          role: 'assistant',
+          content: result.content,
+          tokens: result.usage.completionTokens,
+        });
+      },
+    });
   };
 
   const handleQuickAction = (action: typeof QUICK_ACTIONS[0]) => {
     handleSendMessage(action.prompt);
+  };
+
+  const handleStartEditMessage = (message: Message) => {
+    if (isLoading) return;
+
+    const messageIndex = messages.findIndex(item => item.id === message.id);
+    const laterMessageCount = messageIndex === -1 ? 0 : messages.length - messageIndex - 1;
+
+    const startEditing = () => {
+      setEditingMessageId(message.id);
+      setInputText(message.content);
+      setError(null);
+      setCurrentTab('chat');
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+
+    if (laterMessageCount > 0) {
+      Alert.alert(
+        'Edit and rerun',
+        `Sending this edit will replace this message and remove ${laterMessageCount} later ${laterMessageCount === 1 ? 'message' : 'messages'} in this chat.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: startEditing },
+        ]
+      );
+      return;
+    }
+
+    startEditing();
+  };
+
+  const handleCancelEditing = () => {
+    setEditingMessageId(null);
+    setInputText('');
+  };
+
+  const handleRegenerateMessage = async (message: Message) => {
+    if (!currentProject || !currentThread || isLoading) return;
+
+    const assistantIndex = messages.findIndex(item => item.id === message.id);
+    if (assistantIndex === -1) return;
+
+    const previousUserIndex = [...messages]
+      .slice(0, assistantIndex)
+      .reverse()
+      .findIndex(item => item.role === 'user');
+
+    if (previousUserIndex === -1) {
+      Alert.alert('Cannot Regenerate', 'This reply does not have a user message to rerun from.');
+      return;
+    }
+
+    const userIndex = assistantIndex - previousUserIndex - 1;
+    const sourceUserMessage = messages[userIndex];
+    if (!sourceUserMessage || sourceUserMessage.role !== 'user') return;
+
+    const laterMessageCount = messages.length - assistantIndex - 1;
+
+    const regenerate = async () => {
+      setEditingMessageId(null);
+      setInputText('');
+
+      await runAssistantRequest({
+        userMessage: sourceUserMessage.content,
+        conversationHistory: buildConversationHistory(messages.slice(0, userIndex)),
+        showOptimisticUser: false,
+        preview: {
+          truncateFromMessageId: message.id,
+          truncateInclusive: true,
+        },
+        onPersistSuccess: async (result) => {
+          await storage.updateMessage(sourceUserMessage.id, {
+            tokens: result.usage.promptTokens,
+          });
+          await storage.truncateThreadMessages(currentThread.id, message.id, true);
+          await storage.addMessage({
+            projectId: currentProject.id,
+            threadId: currentThread.id,
+            role: 'assistant',
+            content: result.content,
+            tokens: result.usage.completionTokens,
+          });
+        },
+      });
+    };
+
+    if (laterMessageCount > 0) {
+      Alert.alert(
+        'Regenerate reply',
+        `This will replace this reply and remove ${laterMessageCount} later ${laterMessageCount === 1 ? 'message' : 'messages'} in this chat.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Regenerate', onPress: () => { void regenerate(); } },
+        ]
+      );
+      return;
+    }
+
+    await regenerate();
   };
 
   const handleClearHistory = () => {
@@ -408,14 +683,58 @@ export default function ProjectScreen() {
 
   // Tools handlers
   const handleGenerateOutline = async () => {
-    const outlinePrompt = `Generate a structured story outline for the following. Include Act 1, Act 2 (Parts A and B), and Act 3. For each section, provide:
+    if (!currentProject || !currentThread || isLoading || generatingOutline) return;
+
+    if (!settings.openRouterApiKey) {
+      Alert.alert('API Key Required', 'Please configure your OpenRouter API key in Settings.');
+      return;
+    }
+
+    const outlinePrompt = `Generate a structured story outline for this writing project. Use the current chat, memory notes, imported reference files, and project prompt as the source of truth.
+
+Include:
 - Key story beats
 - Character development moments
 - Major plot points
-- Estimated length/page count
+- Estimated length or pacing guidance
 
-${currentProject?.storyOutline ? `Current story idea: ${currentProject.storyOutline}` : 'Please first describe your story concept.'}`;
-    setInputText(outlinePrompt);
+Structure the response with:
+- Act 1
+- Act 2A
+- Act 2B
+- Act 3
+
+If important details are missing, make only light assumptions and label them clearly. Return only the outline in markdown.`;
+
+    setGeneratingOutline(true);
+    setError(null);
+
+    try {
+      const conversationHistory = buildConversationHistory(messages);
+      const result = await requestMessageCompletion(
+        currentProject.id,
+        currentThread.id,
+        outlinePrompt,
+        systemPrompt,
+        conversationHistory
+      );
+
+      await updateProject(currentProject.id, { storyOutline: result.content });
+      setLastUsage({
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        total: result.usage.totalTokens,
+      });
+      Alert.alert('Outline Ready', 'A fresh outline was generated and saved to this project.');
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+      } else {
+        setError('An unexpected error occurred while generating the outline.');
+      }
+    } finally {
+      setGeneratingOutline(false);
+    }
   };
 
   const handleSuggestScenes = async () => {
@@ -434,6 +753,10 @@ Consider pacing, tension building, and character development.`;
       </View>
     );
   }
+
+  const editingMessage = editingMessageId
+    ? messages.find(message => message.id === editingMessageId && message.role === 'user') || null
+    : null;
 
   const renderChat = () => (
     <KeyboardAvoidingView
@@ -475,7 +798,7 @@ Consider pacing, tension building, and character development.`;
       </View>
 
       {/* Quick Actions */}
-      {messages.length === 0 && !isLoading && (
+      {displayedMessages.length === 0 && !isLoading && (
         <View style={styles.quickActionsContainer}>
           <Text style={[styles.quickActionsTitle, { color: colors.textSecondary }]}>
             Quick Start
@@ -515,19 +838,24 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
 
-        {messages.length === 0 && !optimisticUserMessage && !streamingAssistantText && !isLoading ? (
+        {displayedMessages.length === 0 && !optimisticUserMessage && !streamingAssistantText && !isLoading ? (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
         ) : (
           <>
-            {messages.map((message) => (
+            {displayedMessages.map((message) => (
               <ChatMessage
                 key={message.id}
                 message={message}
                 colors={colors}
                 isUser={message.role === 'user'}
+                canEdit={message.role === 'user'}
+                canRegenerate={message.role === 'assistant'}
+                disabled={isLoading}
+                onEdit={handleStartEditMessage}
+                onRegenerate={(targetMessage) => { void handleRegenerateMessage(targetMessage); }}
               />
             ))}
             {optimisticUserMessage && (
@@ -573,6 +901,23 @@ Consider pacing, tension building, and character development.`;
       </ScrollView>
 
       {/* Input */}
+      {editingMessage ? (
+        <View style={[styles.editBanner, { backgroundColor: colors.primaryLight, borderColor: colors.primary }]}>
+          <View style={styles.editBannerTextWrap}>
+            <Text style={[styles.editBannerTitle, { color: colors.primary }]}>Editing earlier message</Text>
+            <Text style={[styles.editBannerText, { color: colors.textSecondary }]}>
+              Sending now will replace everything after this message in the current chat.
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.editBannerButton, { backgroundColor: colors.surface }]}
+            onPress={handleCancelEditing}
+            disabled={isLoading}
+          >
+            <X size={16} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <TextInput
           ref={inputRef}
@@ -651,9 +996,15 @@ Consider pacing, tension building, and character development.`;
         <View style={styles.toolSection}>
           <Text style={[styles.toolTitle, { color: colors.text }]}>Story Outline</Text>
           <Text style={[styles.toolDescription, { color: colors.textSecondary }]}>
-            Generate a structured 3-act or chapter-by-chapter outline for your story.
+            Generate and save a structured outline from your current project context.
           </Text>
-          <Button title="Generate Outline" onPress={handleGenerateOutline} style={styles.toolButton} />
+          <Button
+            title={generatingOutline ? 'Generating Outline...' : 'Generate Outline'}
+            onPress={handleGenerateOutline}
+            loading={generatingOutline}
+            disabled={isLoading}
+            style={styles.toolButton}
+          />
           {currentProject.storyOutline ? (
             <View style={[styles.outlineDisplay, { backgroundColor: colors.surfaceSecondary }]}>
               <Text style={[styles.outlineText, { color: colors.text }]}>
@@ -1233,6 +1584,22 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
   },
+  messageActionRow: {
+    flexDirection: 'row',
+    marginTop: 12,
+  },
+  messageActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  messageActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
   loadingMessage: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1266,6 +1633,36 @@ const styles = StyleSheet.create({
   dismissText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  editBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 12,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  editBannerTextWrap: {
+    flex: 1,
+  },
+  editBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  editBannerText: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  editBannerButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   inputContainer: {
     flexDirection: 'row',
