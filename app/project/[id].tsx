@@ -25,6 +25,8 @@ import {
   ChevronDown,
   Sparkles,
   FolderOpen,
+  Plus,
+  X,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
@@ -124,7 +126,8 @@ export default function ProjectScreen() {
   const { colors } = useTheme();
   const {
     projects, loadProjects, selectProject, currentProject,
-    messages, loadMessages,
+    threads, currentThread, createThread, selectThread, deleteThread,
+    messages, loadMessages, clearMessages,
     memories, loadMemories,
     files, loadingFiles, loadFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
@@ -168,7 +171,7 @@ export default function ProjectScreen() {
 
   const handleSendMessage = async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
-    if (!messageText || !currentProject || isLoading) return;
+    if (!messageText || !currentProject || !currentThread || isLoading) return;
 
     if (!settings.openRouterApiKey) {
       Alert.alert('API Key Required', 'Please configure your OpenRouter API key in Settings.');
@@ -190,6 +193,7 @@ export default function ProjectScreen() {
 
       const response = await sendMessage(
         currentProject.id,
+        currentThread.id,
         messageText,
         systemPrompt,
         conversationHistory,
@@ -203,7 +207,7 @@ export default function ProjectScreen() {
       });
 
       // Reload messages
-      await loadMessages(currentProject.id);
+      await loadMessages(currentProject.id, currentThread.id);
       await loadProjects(); // Update project's updatedAt
     } catch (err) {
       if (err instanceof ApiError) {
@@ -223,16 +227,16 @@ export default function ProjectScreen() {
   const handleClearHistory = () => {
     Alert.alert(
       'Clear Conversation',
-      'Are you sure you want to clear all messages in this project? This cannot be undone.',
+      'Are you sure you want to clear all messages in this chat? This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear',
           style: 'destructive',
           onPress: async () => {
-            if (currentProject) {
-              await storage.clearProjectMessages(currentProject.id);
-              await loadMessages(currentProject.id);
+            if (currentProject && currentThread) {
+              await clearMessages(currentThread.id);
+              await loadMessages(currentProject.id, currentThread.id);
             }
           },
         },
@@ -241,9 +245,9 @@ export default function ProjectScreen() {
   };
 
   const handleExport = async () => {
-    if (!currentProject) return;
+    if (!currentProject || !currentThread) return;
     try {
-      const text = await storage.exportConversation(currentProject.id);
+      const text = await storage.exportConversation(currentProject.id, currentThread.id);
       if (!text.trim()) {
         Alert.alert('Nothing to Export', 'This conversation is empty.');
         return;
@@ -312,6 +316,29 @@ Consider pacing, tension building, and character development.`;
     setInputText(scenePrompt);
   };
 
+  const handleCreateThread = async () => {
+    if (!currentProject) return;
+    const count = threads.length + 1;
+    await createThread(currentProject.id, `Chat ${count}`);
+    setLastUsage(null);
+  };
+
+  const handleDeleteThread = (threadId: string) => {
+    if (threads.length <= 1) return;
+    Alert.alert(
+      'Delete Chat',
+      'Are you sure you want to delete this chat and all its messages?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => deleteThread(threadId),
+        },
+      ]
+    );
+  };
+
   if (!currentProject) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -326,6 +353,43 @@ Consider pacing, tension building, and character development.`;
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={90}
     >
+      {/* Thread Switcher */}
+      <View style={[styles.threadSwitcher, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.threadSwitcherScroll}>
+          {threads.map((thread) => {
+            const isActive = currentThread?.id === thread.id;
+            return (
+              <View key={thread.id} style={styles.threadChipWrapper}>
+                <TouchableOpacity
+                  style={[
+                    styles.threadChip,
+                    { backgroundColor: isActive ? colors.primaryLight : colors.surfaceSecondary, borderColor: isActive ? colors.primary : colors.border },
+                  ]}
+                  onPress={() => { selectThread(thread); setLastUsage(null); }}
+                >
+                  <Text style={[styles.threadChipText, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
+                    {thread.title || 'Chat'}
+                  </Text>
+                  {threads.length > 1 && (
+                    <TouchableOpacity
+                      onPress={() => handleDeleteThread(thread.id)}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <X size={12} color={isActive ? colors.primary : colors.textTertiary} />
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+          <TouchableOpacity
+            style={[styles.threadAddButton, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+            onPress={handleCreateThread}
+          >
+            <Plus size={16} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
       {/* Quick Actions */}
       {messages.length === 0 && !isLoading && (
         <View style={styles.quickActionsContainer}>
@@ -822,6 +886,44 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+
+  // Thread switcher
+  threadSwitcher: {
+    borderBottomWidth: 1,
+    paddingVertical: 8,
+  },
+  threadSwitcherScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  threadChipWrapper: {
+    flexShrink: 0,
+  },
+  threadChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    maxWidth: 140,
+  },
+  threadChipText: {
+    fontSize: 13,
+    fontWeight: '500',
+    flexShrink: 1,
+  },
+  threadAddButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   // Chat styles
