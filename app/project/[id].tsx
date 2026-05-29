@@ -300,6 +300,9 @@ export default function ProjectScreen() {
     setIsLoading(true);
     setError(null);
 
+    await storage.deleteMessage(lastAssistantMsg.id);
+    await loadMessages(currentProject.id, currentThread.id);
+
     const liveAssistantMessage = createLiveMessage('assistant');
     setLiveMessages([liveAssistantMessage]);
 
@@ -323,11 +326,18 @@ export default function ProjectScreen() {
         total: response.usage.totalTokens,
       });
 
-      await storage.deleteMessage(lastAssistantMsg.id);
       await loadMessages(currentProject.id, currentThread.id);
       setLiveMessages([]);
       await loadProjects();
     } catch (err) {
+      await storage.addMessage({
+        projectId: currentProject.id,
+        threadId: currentThread.id,
+        role: 'assistant',
+        content: lastAssistantMsg.content,
+        tokens: lastAssistantMsg.tokens,
+      });
+      await loadMessages(currentProject.id, currentThread.id);
       setLiveMessages([]);
       if (err instanceof ApiError) {
         setError(err.message);
