@@ -1,3 +1,4 @@
+import { fetch } from 'expo/fetch';
 import { Message, ApiUsage, ChatResponse, MemoryEntry, ProjectFile, ProjectFileChunk, AVAILABLE_MODELS } from '@/types';
 import { getSettings, getProjectMemories, getProjectFiles, getProjectFileChunks, addMessage, recordApiUsage } from './storage';
 
@@ -289,6 +290,7 @@ export async function sendMessage(
       headers: {
         'Authorization': `Bearer ${settings.openRouterApiKey}`,
         'Content-Type': 'application/json',
+        'Accept': useStreaming ? 'text/event-stream' : 'application/json',
         'HTTP-Referer': 'https://creative-writer.app',
         'X-Title': 'Creative Writing Assistant',
       },
@@ -404,6 +406,7 @@ export async function validateApiKey(apiKey: string): Promise<boolean> {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         'HTTP-Referer': 'https://creative-writer.app',
         'X-Title': 'Creative Writing Assistant',
       },
