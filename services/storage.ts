@@ -86,7 +86,8 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
   let messagesChanged = false;
   const nextThreads = [...existingThreads];
   const nextMessages = existingMessages.map((message) => {
-    if (message.threadId && threadMap.has(message.threadId)) {
+    // Only migrate truly legacy messages that never had a thread id.
+    if (message.threadId) {
       return message;
     }
 
@@ -163,9 +164,9 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
 export async function deleteProject(id: string): Promise<void> {
   const projects = await getProjects();
   await saveProjects(projects.filter(p => p.id !== id));
-  const threads = await getAllThreads();
+  const threads = await getRawThreads();
   await saveThreads(threads.filter(t => t.projectId !== id));
-  const messages = await getAllMessages();
+  const messages = await getRawMessages();
   await saveMessages(messages.filter(msg => msg.projectId !== id));
   const memories = await getAllMemories();
   await saveMemories(memories.filter(m => m.projectId !== id));
@@ -223,12 +224,12 @@ export async function updateThread(id: string, updates: Partial<ChatThread>): Pr
 }
 
 export async function deleteThread(id: string): Promise<void> {
-  const threads = await getAllThreads();
+  const threads = await getRawThreads();
   const thread = threads.find(item => item.id === id);
   if (!thread) return;
 
   await saveThreads(threads.filter(item => item.id !== id));
-  const messages = await getAllMessages();
+  const messages = await getRawMessages();
   await saveMessages(messages.filter(message => message.threadId !== id));
   await touchProject(thread.projectId);
 }
