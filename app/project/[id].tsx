@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,6 @@ import {
   Share,
   ActivityIndicator,
   Dimensions,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -174,19 +172,11 @@ export default function ProjectScreen() {
   const [systemPromptModalVisible, setSystemPromptModalVisible] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
 
-  const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
-  const shouldAutoScrollRef = useRef(true);
   const safeThreads = useMemo(() => (Array.isArray(threads) ? threads : []), [threads]);
   const safeMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
   const displayedMessages = [...safeMessages, ...liveMessages];
   const hasLiveAssistantMessage = liveMessages.some((message) => message.role === 'assistant');
-
-  const scrollToBottom = useCallback((animated = false) => {
-    if (shouldAutoScrollRef.current) {
-      scrollViewRef.current?.scrollToEnd({ animated });
-    }
-  }, []);
 
   const createLiveMessage = useCallback((role: 'user' | 'assistant', content = ''): Message => ({
     id: `live-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -212,27 +202,6 @@ export default function ProjectScreen() {
     }, [id, loadProjects, selectProject])
   );
 
-  // Scroll to bottom when messages or streaming content changes
-  useEffect(() => {
-    if (safeMessages.length > 0) {
-      setTimeout(() => {
-        scrollToBottom(false);
-      }, 100);
-    }
-  }, [safeMessages.length, scrollToBottom]);
-
-  useEffect(() => {
-    if (liveMessages.length > 0) {
-      scrollToBottom(false);
-    }
-  }, [liveMessages, scrollToBottom]);
-
-  const handleMessagesScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
-    shouldAutoScrollRef.current = distanceFromBottom < 120;
-  }, []);
-
   const handleSendMessage = useCallback(async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
     if (!messageText || !currentProject || !currentThread || isLoading) return;
@@ -245,7 +214,6 @@ export default function ProjectScreen() {
     setInputText('');
     setIsLoading(true);
     setError(null);
-    shouldAutoScrollRef.current = true;
 
     const liveUserMessage = createLiveMessage('user', messageText);
     const liveAssistantMessage = createLiveMessage('assistant');
@@ -331,7 +299,6 @@ export default function ProjectScreen() {
 
     setIsLoading(true);
     setError(null);
-    shouldAutoScrollRef.current = true;
 
     const liveAssistantMessage = createLiveMessage('assistant');
     setLiveMessages([liveAssistantMessage]);
@@ -584,13 +551,10 @@ Consider pacing, tension building, and character development.`;
 
       {/* Messages */}
       <ScrollView
-        ref={scrollViewRef}
         style={styles.messagesContainer}
         contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        onScroll={handleMessagesScroll}
-        scrollEventThrottle={16}
       >
         {error && (
           <View style={[styles.errorBanner, { backgroundColor: colors.errorLight }]}>
