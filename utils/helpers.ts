@@ -39,14 +39,21 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     // Anthropic
     'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
     'anthropic/claude-3.5-sonnet': { input: 3, output: 15 },
+    // DeepSeek
+    'deepseek/deepseek-v4-pro': { input: 0.435, output: 0.87 },
+    'deepseek/deepseek-v4-flash': { input: 0.1, output: 0.2 },
     // Google
     'google/gemini-pro-1.5': { input: 1.25, output: 5 },
     'google/gemma-4-31b-it:free': { input: 0, output: 0 },
     'google/gemma-4-31b-it': { input: 0.12, output: 0.37 },
     // Meta
     'meta-llama/llama-3.1-70b-instruct': { input: 0.9, output: 0.9 },
+    // MiniMax
+    'minimax/minimax-m2.7': { input: 0.279, output: 1.2 },
     // Mistral
     'mistralai/mistral-large': { input: 2, output: 6 },
+    // Moonshot AI
+    'moonshotai/kimi-k2.6': { input: 0.73, output: 3.49 },
     // OpenAI
     'openai/gpt-4o': { input: 2.5, output: 10 },
     'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
