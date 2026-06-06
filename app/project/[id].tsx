@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,10 @@ import {
   Share,
   ActivityIndicator,
   Dimensions,
+  Animated,
+  type LayoutChangeEvent,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -27,6 +31,7 @@ import {
   Plus,
   X,
   RotateCcw,
+  ChevronDown,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
@@ -38,6 +43,10 @@ import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const SCROLL_TO_BOTTOM_THRESHOLD = 120;
+const SCROLL_TO_BOTTOM_IDLE_DELAY = 900;
+const SCROLL_TO_BOTTOM_ACTIVE_OPACITY = 1;
+const SCROLL_TO_BOTTOM_IDLE_OPACITY = 0.38;
 
 type TabType = 'chat' | 'memory' | 'tools' | 'files';
 type ToolsSubTab = 'outline' | 'scenes' | 'quick';
@@ -171,12 +180,115 @@ export default function ProjectScreen() {
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
   const [systemPromptModalVisible, setSystemPromptModalVisible] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   const inputRef = useRef<TextInput>(null);
+  const messagesScrollRef = useRef<ScrollView>(null);
+  const scrollMetricsRef = useRef({ contentHeight: 0, visibleHeight: 0, offsetY: 0 });
+  const scrollIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [scrollToBottomOpacity] = useState(() => new Animated.Value(0));
   const safeThreads = useMemo(() => (Array.isArray(threads) ? threads : []), [threads]);
   const safeMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
   const displayedMessages = [...safeMessages, ...liveMessages];
   const hasLiveAssistantMessage = liveMessages.some((message) => message.role === 'assistant');
+  const hasDisplayedMessages = displayedMessages.length > 0;
+  const shouldShowScrollToBottom = currentTab === 'chat' && hasDisplayedMessages && !isNearBottom;
+
+  const clearScrollIdleTimeout = useCallback(() => {
+    if (scrollIdleTimeoutRef.current) {
+      clearTimeout(scrollIdleTimeoutRef.current);
+      scrollIdleTimeoutRef.current = null;
+    }
+  }, []);
+
+  const animateScrollToBottomArrow = useCallback((toValue: number) => {
+    Animated.timing(scrollToBottomOpacity, {
+      toValue,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [scrollToBottomOpacity]);
+
+  const updateNearBottomState = useCallback(() => {
+    const { contentHeight, visibleHeight, offsetY } = scrollMetricsRef.current;
+
+    if (contentHeight <= 0 || visibleHeight <= 0) {
+      setIsNearBottom(true);
+      return true;
+    }
+
+    const nearBottom = offsetY + visibleHeight >= contentHeight - SCROLL_TO_BOTTOM_THRESHOLD;
+    setIsNearBottom(nearBottom);
+    return nearBottom;
+  }, []);
+
+  const scheduleScrollToBottomIdleFade = useCallback(() => {
+    clearScrollIdleTimeout();
+    scrollIdleTimeoutRef.current = setTimeout(() => {
+      animateScrollToBottomArrow(SCROLL_TO_BOTTOM_IDLE_OPACITY);
+      scrollIdleTimeoutRef.current = null;
+    }, SCROLL_TO_BOTTOM_IDLE_DELAY);
+  }, [animateScrollToBottomArrow, clearScrollIdleTimeout]);
+
+  const handleMessagesLayout = useCallback((event: LayoutChangeEvent) => {
+    scrollMetricsRef.current.visibleHeight = event.nativeEvent.layout.height;
+    updateNearBottomState();
+  }, [updateNearBottomState]);
+
+  const handleMessagesContentSizeChange = useCallback((_: number, height: number) => {
+    scrollMetricsRef.current.contentHeight = height;
+    updateNearBottomState();
+  }, [updateNearBottomState]);
+
+  const handleMessagesScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+
+    scrollMetricsRef.current = {
+      contentHeight: contentSize.height,
+      visibleHeight: layoutMeasurement.height,
+      offsetY: contentOffset.y,
+    };
+
+    const nearBottom = updateNearBottomState();
+
+    if (nearBottom || !hasDisplayedMessages || currentTab !== 'chat') {
+      clearScrollIdleTimeout();
+      animateScrollToBottomArrow(0);
+      return;
+    }
+
+    animateScrollToBottomArrow(SCROLL_TO_BOTTOM_ACTIVE_OPACITY);
+    scheduleScrollToBottomIdleFade();
+  }, [
+    animateScrollToBottomArrow,
+    clearScrollIdleTimeout,
+    currentTab,
+    hasDisplayedMessages,
+    scheduleScrollToBottomIdleFade,
+    updateNearBottomState,
+  ]);
+
+  const handleScrollToBottomPress = useCallback(() => {
+    clearScrollIdleTimeout();
+    animateScrollToBottomArrow(SCROLL_TO_BOTTOM_ACTIVE_OPACITY);
+    messagesScrollRef.current?.scrollToEnd({ animated: true });
+  }, [animateScrollToBottomArrow, clearScrollIdleTimeout]);
+
+  useEffect(() => {
+    if (!shouldShowScrollToBottom) {
+      clearScrollIdleTimeout();
+      animateScrollToBottomArrow(0);
+      return;
+    }
+
+    animateScrollToBottomArrow(SCROLL_TO_BOTTOM_IDLE_OPACITY);
+  }, [animateScrollToBottomArrow, clearScrollIdleTimeout, shouldShowScrollToBottom]);
+
+  useEffect(() => {
+    return () => {
+      clearScrollIdleTimeout();
+    };
+  }, [clearScrollIdleTimeout]);
 
   const createLiveMessage = useCallback((role: 'user' | 'assistant', content = ''): Message => ({
     id: `live-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -485,7 +597,7 @@ Consider pacing, tension building, and character development.`;
     );
   }
 
-  const renderChat = () => (
+  const chatContent = (
     <KeyboardAvoidingView
       style={styles.chatContainer}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -561,10 +673,15 @@ Consider pacing, tension building, and character development.`;
 
       {/* Messages */}
       <ScrollView
+        ref={messagesScrollRef}
         style={styles.messagesContainer}
         contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        onLayout={handleMessagesLayout}
+        onContentSizeChange={handleMessagesContentSizeChange}
+        onScroll={handleMessagesScroll}
+        scrollEventThrottle={16}
       >
         {error && (
           <View style={[styles.errorBanner, { backgroundColor: colors.errorLight }]}>
@@ -613,6 +730,31 @@ Consider pacing, tension building, and character development.`;
           </View>
         )}
       </ScrollView>
+
+      <Animated.View
+        pointerEvents={shouldShowScrollToBottom ? 'auto' : 'none'}
+        style={[
+          styles.scrollToBottomButtonContainer,
+          {
+            opacity: scrollToBottomOpacity,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.scrollToBottomButton,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
+          ]}
+          onPress={handleScrollToBottomPress}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to newest message"
+        >
+          <ChevronDown size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* Input */}
       <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -781,7 +923,7 @@ Consider pacing, tension building, and character development.`;
         </View>
 
         {/* Content */}
-        {currentTab === 'chat' && renderChat()}
+        {currentTab === 'chat' && chatContent}
         {currentTab === 'memory' && (
           <MemoryPanel projectId={currentProject.id} colors={colors} />
         )}
@@ -1110,6 +1252,25 @@ const styles = StyleSheet.create({
   },
   messagesContainer: {
     flex: 1,
+  },
+  scrollToBottomButtonContainer: {
+    position: 'absolute',
+    right: 20,
+    bottom: 112,
+    zIndex: 20,
+  },
+  scrollToBottomButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
   },
   messagesContent: {
     padding: 16,
