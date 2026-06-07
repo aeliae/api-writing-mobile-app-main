@@ -57,11 +57,12 @@ interface ChatMessageProps {
   isUser: boolean;
   isLastAssistant?: boolean;
   onRegenerate?: () => void;
+  onBranch?: () => void;
   isLoading?: boolean;
   isStreaming?: boolean;
 }
 
-function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, isLoading, isStreaming }: ChatMessageProps) {
+function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, onBranch, isLoading, isStreaming }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
@@ -86,6 +87,19 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, i
           lineHeight: 24,
           color: colors.proseUserText,
         }}>{message.content}</Text>
+        {onBranch && (
+          <View style={styles.messageActionRow}>
+            <TouchableOpacity
+              onPress={onBranch}
+              disabled={isLoading}
+              style={styles.messageActionButton}
+            >
+              <Text style={[styles.messageActionText, { color: colors.textTertiary, opacity: isLoading ? 0.5 : 1 }]}>
+                Branch here
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   }
@@ -139,22 +153,32 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, i
           </Text>
         </View>
       )}
-      {isLastAssistant && onRegenerate && (
-        <TouchableOpacity
-          onPress={onRegenerate}
-          disabled={isLoading}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            marginTop: 12,
-            alignSelf: 'flex-start',
-            opacity: isLoading ? 0.4 : 0.6,
-          }}
-        >
-          <RotateCcw size={12} color={colors.textTertiary} />
-          <Text style={{ fontSize: 11, color: colors.textTertiary }}>Regenerate</Text>
-        </TouchableOpacity>
+      {(onBranch || (isLastAssistant && onRegenerate)) && (
+        <View style={styles.messageActionRow}>
+          {onBranch && (
+            <TouchableOpacity
+              onPress={onBranch}
+              disabled={isLoading}
+              style={styles.messageActionButton}
+            >
+              <Text style={[styles.messageActionText, { color: colors.textTertiary, opacity: isLoading ? 0.5 : 1 }]}>
+                Branch here
+              </Text>
+            </TouchableOpacity>
+          )}
+          {isLastAssistant && onRegenerate && (
+            <TouchableOpacity
+              onPress={onRegenerate}
+              disabled={isLoading}
+              style={styles.messageActionButton}
+            >
+              <RotateCcw size={12} color={colors.textTertiary} />
+              <Text style={[styles.messageActionText, { color: colors.textTertiary, opacity: isLoading ? 0.5 : 1 }]}>
+                Regenerate
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
       )}
     </View>
   );
@@ -165,7 +189,7 @@ export default function ProjectScreen() {
   const { colors } = useTheme();
   const {
     loadProjects, selectProject, currentProject,
-    threads, currentThread, createThread, selectThread, deleteThread,
+    threads, currentThread, createThread, branchThread, selectThread, deleteThread,
     messages, loadMessages, clearMessages,
     files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
@@ -470,6 +494,28 @@ export default function ProjectScreen() {
     systemPrompt,
   ]);
 
+  const handleBranchFromMessage = useCallback(async (messageId: string) => {
+    if (!currentThread || isLoading) return;
+
+    if (!safeMessages.some((message) => message.id === messageId)) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      await branchThread(currentThread.id, messageId);
+      setLastUsage(null);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('Could not create a new chat branch. Please try again.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [branchThread, currentThread, isLoading, safeMessages]);
+
   const handleQuickAction = useCallback((action: typeof QUICK_ACTIONS[0]) => {
     void handleSendMessage(action.prompt);
   }, [handleSendMessage]);
@@ -623,7 +669,7 @@ Consider pacing, tension building, and character development.`;
                   disabled={isLoading}
                 >
                   <Text style={[styles.threadChipText, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
-                    {thread.title || 'Chat'}
+                    {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
                   </Text>
                   {safeThreads.length > 1 && (
                     <TouchableOpacity
@@ -714,6 +760,7 @@ Consider pacing, tension building, and character development.`;
                   isUser={message.role === 'user'}
                   isLastAssistant={isLastAssistant}
                   onRegenerate={isLastAssistant ? handleRegenerate : undefined}
+                  onBranch={isLiveMessage ? undefined : () => handleBranchFromMessage(message.id)}
                   isLoading={isLoading}
                   isStreaming={isLiveMessage && message.role === 'assistant'}
                 />
@@ -1293,6 +1340,21 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 15,
     lineHeight: 22,
+  },
+  messageActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+  },
+  messageActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+  },
+  messageActionText: {
+    fontSize: 11,
   },
   tokenCount: {
     fontSize: 11,
