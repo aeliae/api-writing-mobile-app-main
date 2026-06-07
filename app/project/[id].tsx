@@ -32,6 +32,7 @@ import {
   X,
   RotateCcw,
   ChevronDown,
+  MessageSquare,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
@@ -48,7 +49,7 @@ const SCROLL_TO_BOTTOM_IDLE_DELAY = 900;
 const SCROLL_TO_BOTTOM_ACTIVE_OPACITY = 1;
 const SCROLL_TO_BOTTOM_IDLE_OPACITY = 0.38;
 
-type TabType = 'chat' | 'memory' | 'tools' | 'files';
+type TabType = 'chat' | 'chats' | 'memory' | 'tools' | 'files';
 type ToolsSubTab = 'outline' | 'scenes' | 'quick';
 
 interface ChatMessageProps {
@@ -617,6 +618,7 @@ Consider pacing, tension building, and character development.`;
     const count = safeThreads.length + 1;
     await createThread(currentProject.id, `Chat ${count}`);
     setLastUsage(null);
+    setCurrentTab('chat');
   };
 
   const handleDeleteThread = (threadId: string) => {
@@ -643,55 +645,28 @@ Consider pacing, tension building, and character development.`;
     );
   }
 
+  const handleSelectThreadFromList = async (thread: typeof safeThreads[number]) => {
+    await selectThread(thread);
+    setLastUsage(null);
+    setCurrentTab('chat');
+  };
+
   const chatContent = (
     <KeyboardAvoidingView
       style={styles.chatContainer}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={90}
     >
-      {/* Thread Switcher */}
-      <View style={[styles.threadSwitcher, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.threadSwitcherScroll}>
-          {safeThreads.map((thread) => {
-            const isActive = currentThread?.id === thread.id;
-            return (
-              <View key={thread.id} style={styles.threadChipWrapper}>
-                <TouchableOpacity
-                  style={[
-                    styles.threadChip,
-                    {
-                      backgroundColor: isActive ? colors.primaryLight : colors.surfaceSecondary,
-                      borderColor: isActive ? colors.primary : colors.border,
-                      opacity: isLoading ? 0.6 : 1,
-                    },
-                  ]}
-                  onPress={() => { selectThread(thread); setLastUsage(null); }}
-                  disabled={isLoading}
-                >
-                  <Text style={[styles.threadChipText, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
-                    {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
-                  </Text>
-                  {safeThreads.length > 1 && (
-                    <TouchableOpacity
-                      onPress={() => handleDeleteThread(thread.id)}
-                      disabled={isLoading}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <X size={12} color={isActive ? colors.primary : colors.textTertiary} />
-                    </TouchableOpacity>
-                  )}
-                </TouchableOpacity>
-              </View>
-            );
-          })}
-          <TouchableOpacity
-            style={[styles.threadAddButton, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border, opacity: isLoading ? 0.6 : 1 }]}
-            onPress={handleCreateThread}
-            disabled={isLoading}
-          >
-            <Plus size={16} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </ScrollView>
+      <View style={[styles.currentChatBar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={styles.currentChatCopy}>
+          <Text style={[styles.currentChatLabel, { color: colors.textSecondary }]}>Current chat</Text>
+          <Text style={[styles.currentChatTitle, { color: colors.text }]} numberOfLines={1}>
+            {currentThread?.title || (currentThread?.parentThreadId ? 'Branch' : 'Chat')}
+          </Text>
+        </View>
+        <TouchableOpacity onPress={() => setCurrentTab('chats')} style={styles.currentChatManageButton}>
+          <Text style={[styles.currentChatManageText, { color: colors.primary }]}>View all</Text>
+        </TouchableOpacity>
       </View>
       {/* Quick Actions */}
       {safeMessages.length === 0 && liveMessages.length === 0 && !isLoading && (
@@ -923,6 +898,103 @@ Consider pacing, tension building, and character development.`;
     </ScrollView>
   );
 
+  const chatsContent = (
+    <ScrollView style={styles.chatsContainer} contentContainerStyle={styles.chatsContent}>
+      <View style={styles.chatsHeader}>
+        <View style={styles.chatsHeaderCopy}>
+          <Text style={[styles.chatsTitle, { color: colors.text }]}>Project Chats</Text>
+          <Text style={[styles.chatsDescription, { color: colors.textSecondary }]}>
+            Keep alternate directions, branches, and fresh starts in one place.
+          </Text>
+        </View>
+        <Button
+          title="New Chat"
+          size="small"
+          onPress={handleCreateThread}
+          disabled={isLoading}
+          icon={<Plus size={14} color="#FFFFFF" />}
+        />
+      </View>
+
+      <View style={styles.chatsList}>
+        {safeThreads.map((thread) => {
+          const isActive = currentThread?.id === thread.id;
+          const parentThread = thread.parentThreadId
+            ? safeThreads.find((candidate) => candidate.id === thread.parentThreadId) || null
+            : null;
+
+          return (
+            <TouchableOpacity
+              key={thread.id}
+              style={[
+                styles.chatListCard,
+                {
+                  backgroundColor: isActive ? colors.primaryLight : colors.surface,
+                  borderColor: isActive ? colors.primary : colors.border,
+                  opacity: isLoading ? 0.7 : 1,
+                },
+              ]}
+              onPress={() => handleSelectThreadFromList(thread)}
+              disabled={isLoading}
+              activeOpacity={0.85}
+            >
+              <View style={styles.chatListCardHeader}>
+                <View style={styles.chatListCardTitleWrap}>
+                  <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
+                    {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
+                  </Text>
+                  <View style={styles.chatListMetaRow}>
+                    <View
+                      style={[
+                        styles.chatListBadge,
+                        {
+                          backgroundColor: thread.parentThreadId ? colors.surfaceSecondary : colors.primaryLight,
+                          borderColor: thread.parentThreadId ? colors.border : colors.primary,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.chatListBadgeText,
+                          { color: thread.parentThreadId ? colors.textSecondary : colors.primary },
+                        ]}
+                      >
+                        {thread.parentThreadId ? 'Branch' : 'Main'}
+                      </Text>
+                    </View>
+                    {isActive && (
+                      <View style={[styles.chatListBadge, { backgroundColor: colors.successLight, borderColor: colors.success }]}>
+                        <Text style={[styles.chatListBadgeText, { color: colors.success }]}>Open</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+
+                {safeThreads.length > 1 && (
+                  <TouchableOpacity
+                    onPress={() => handleDeleteThread(thread.id)}
+                    disabled={isLoading}
+                    style={styles.chatDeleteButton}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <X size={14} color={colors.textTertiary} />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]}>
+                Updated {formatDate(thread.updatedAt)}
+              </Text>
+              <Text style={[styles.chatListSubtitle, { color: colors.textSecondary }]}>
+                {parentThread ? `Branched from ${parentThread.title || 'another chat'}` : 'Primary chat for this project'}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+
   return (
     <>
       <Stack.Screen
@@ -944,7 +1016,7 @@ Consider pacing, tension building, and character development.`;
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Tab Bar */}
         <View style={[styles.tabBar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          {(['chat', 'tools', 'memory', 'files'] as TabType[]).map((tab) => (
+          {(['chat', 'chats', 'tools', 'memory', 'files'] as TabType[]).map((tab) => (
             <TouchableOpacity
               key={tab}
               style={[
@@ -954,6 +1026,7 @@ Consider pacing, tension building, and character development.`;
               onPress={() => setCurrentTab(tab)}
             >
               {tab === 'chat' && <Pen size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+              {tab === 'chats' && <MessageSquare size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
               {tab === 'tools' && <Sparkles size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
               {tab === 'memory' && <Brain size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
               {tab === 'files' && <FolderOpen size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
@@ -963,7 +1036,7 @@ Consider pacing, tension building, and character development.`;
                   { color: currentTab === tab ? colors.primary : colors.textSecondary },
                 ]}
               >
-                {tab === 'files' ? 'Files' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tab === 'chat' ? 'Write' : tab === 'chats' ? 'Chats' : tab === 'files' ? 'Files' : tab.charAt(0).toUpperCase() + tab.slice(1)}
               </Text>
             </TouchableOpacity>
           ))}
@@ -971,6 +1044,7 @@ Consider pacing, tension building, and character development.`;
 
         {/* Content */}
         {currentTab === 'chat' && chatContent}
+        {currentTab === 'chats' && chatsContent}
         {currentTab === 'memory' && (
           <MemoryPanel projectId={currentProject.id} colors={colors} />
         )}
@@ -1223,51 +1297,120 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   tabText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-
-  // Thread switcher
-  threadSwitcher: {
-    borderBottomWidth: 1,
-    paddingVertical: 8,
-  },
-  threadSwitcherScroll: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-  threadChipWrapper: {
-    flexShrink: 0,
-  },
-  threadChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    maxWidth: 140,
-  },
-  threadChipText: {
     fontSize: 13,
-    fontWeight: '500',
-    flexShrink: 1,
-  },
-  threadAddButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    fontWeight: '600',
   },
 
   // Chat styles
   chatContainer: {
     flex: 1,
+  },
+  currentChatBar: {
+    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  currentChatCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  currentChatLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  currentChatTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  currentChatManageButton: {
+    paddingVertical: 6,
+  },
+  currentChatManageText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  chatsContainer: {
+    flex: 1,
+  },
+  chatsContent: {
+    padding: 16,
+    paddingBottom: 24,
+  },
+  chatsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 18,
+  },
+  chatsHeaderCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  chatsTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  chatsDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  chatsList: {
+    gap: 12,
+  },
+  chatListCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+    gap: 8,
+  },
+  chatListCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  chatListCardTitleWrap: {
+    flex: 1,
+    gap: 8,
+  },
+  chatListCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  chatListMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  chatListBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  chatListBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  chatDeleteButton: {
+    paddingTop: 2,
+  },
+  chatListTimestamp: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chatListSubtitle: {
+    fontSize: 14,
+    lineHeight: 20,
   },
   quickActionsContainer: {
     padding: 16,
