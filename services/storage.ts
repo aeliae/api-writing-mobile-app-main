@@ -32,6 +32,12 @@ function parseStoredObject<T extends object>(data: string | null, fallback: T): 
   return { ...fallback, ...parsed };
 }
 
+function getDefaultBranchTitle(sourceThread: ChatThread, threads: ChatThread[]): string {
+  const baseTitle = sourceThread.title.trim() || DEFAULT_THREAD_TITLE;
+  const siblingCount = threads.filter(thread => thread.parentThreadId === sourceThread.id).length;
+  return `${baseTitle} Branch ${siblingCount + 1}`;
+}
+
 async function touchProject(projectId: string, updatedAt = new Date().toISOString()): Promise<void> {
   const projects = await getProjects();
   const index = projects.findIndex(p => p.id === projectId);
@@ -203,6 +209,56 @@ export async function createThread(projectId: string, title = DEFAULT_THREAD_TIT
   threads.push(newThread);
   await saveThreads(threads);
   await touchProject(projectId, timestamp);
+  return newThread;
+}
+
+export async function createBranchedThread(
+  sourceThreadId: string,
+  fromMessageId: string,
+  title?: string
+): Promise<ChatThread> {
+  const [threads, allMessages] = await Promise.all([
+    getAllThreads(),
+    getAllMessages(),
+  ]);
+
+  const sourceThread = threads.find(thread => thread.id === sourceThreadId);
+  if (!sourceThread) {
+    throw new Error('Source chat could not be found.');
+  }
+
+  const sourceMessages = allMessages
+    .filter(message => message.threadId === sourceThreadId)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const cutoffIndex = sourceMessages.findIndex(message => message.id === fromMessageId);
+
+  if (cutoffIndex === -1) {
+    throw new Error('Branch point could not be found in this chat.');
+  }
+
+  const timestamp = new Date().toISOString();
+  const newThread: ChatThread = {
+    id: generateId(),
+    projectId: sourceThread.projectId,
+    title: title?.trim() || getDefaultBranchTitle(sourceThread, threads),
+    parentThreadId: sourceThreadId,
+    branchFromMessageId: fromMessageId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  const copiedMessages = sourceMessages
+    .slice(0, cutoffIndex + 1)
+    .map((message) => ({
+      ...message,
+      id: generateId(),
+      threadId: newThread.id,
+    }));
+
+  await saveThreads([...threads, newThread]);
+  await saveMessages([...allMessages, ...copiedMessages]);
+  await touchProject(sourceThread.projectId, timestamp);
+
   return newThread;
 }
 
