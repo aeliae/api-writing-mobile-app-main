@@ -13,6 +13,8 @@ export interface ChatThread {
   id: string;
   projectId: string;
   title: string;
+  parentThreadId?: string;
+  branchFromMessageId?: string;
   createdAt: string;
   updatedAt: string;
 }
