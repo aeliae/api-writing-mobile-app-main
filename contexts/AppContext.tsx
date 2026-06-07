@@ -22,6 +22,7 @@ interface AppContextType {
   loadThreads: (projectId: string) => Promise<ChatThread[]>;
   selectThread: (thread: ChatThread | null) => Promise<void>;
   createThread: (projectId: string, title?: string) => Promise<ChatThread>;
+  branchThread: (sourceThreadId: string, fromMessageId: string, title?: string) => Promise<ChatThread>;
   updateThread: (id: string, updates: Partial<ChatThread>) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
 
@@ -212,6 +213,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return nextThread;
   }, [currentProject, loadProjects, loadThreads, selectThread]);
 
+  const branchThread = useCallback(async (sourceThreadId: string, fromMessageId: string, title?: string) => {
+    const thread = await storage.createBranchedThread(sourceThreadId, fromMessageId, title);
+    const loadedThreads = await loadThreads(thread.projectId);
+    const nextThread = loadedThreads.find(item => item.id === thread.id) || thread;
+    if (currentProject?.id === thread.projectId) {
+      await selectThread(nextThread);
+      await loadProjects();
+    }
+    return nextThread;
+  }, [currentProject, loadProjects, loadThreads, selectThread]);
+
   const updateThread = useCallback(async (id: string, updates: Partial<ChatThread>) => {
     await storage.updateThread(id, updates);
     if (!currentProject) return;
@@ -346,6 +358,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     loadThreads,
     selectThread,
     createThread,
+    branchThread,
     updateThread,
     deleteThread,
     messages,
