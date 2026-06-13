@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { Directory } from 'expo-file-system';
 import {
   Send,
   Trash2,
@@ -48,6 +49,7 @@ const SCROLL_TO_BOTTOM_THRESHOLD = 120;
 const SCROLL_TO_BOTTOM_IDLE_DELAY = 900;
 const SCROLL_TO_BOTTOM_ACTIVE_OPACITY = 1;
 const SCROLL_TO_BOTTOM_IDLE_OPACITY = 0.38;
+const LARGE_NATIVE_EXPORT_THRESHOLD = 50000;
 
 type TabType = 'chat' | 'chats' | 'memory' | 'tools' | 'files';
 type ToolsSubTab = 'outline' | 'scenes' | 'quick';
@@ -61,6 +63,20 @@ interface ChatMessageProps {
   onBranch?: () => void;
   isLoading?: boolean;
   isStreaming?: boolean;
+}
+
+function sanitizeExportSegment(value: string): string {
+  return value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildExportFileName(projectName: string, threadTitle: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeProject = sanitizeExportSegment(projectName) || 'project';
+  const safeThread = sanitizeExportSegment(threadTitle) || 'chat';
+  return `${safeProject}-${safeThread}-${timestamp}.txt`;
 }
 
 function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, onBranch, isLoading, isStreaming }: ChatMessageProps) {
@@ -553,6 +569,22 @@ export default function ProjectScreen() {
       if (Platform.OS === 'web') {
         await navigator.clipboard?.writeText(text);
         Alert.alert('Copied', 'Conversation copied to clipboard');
+        return;
+      }
+
+      if (text.length >= LARGE_NATIVE_EXPORT_THRESHOLD) {
+        const directory = await Directory.pickDirectoryAsync();
+        const file = directory.createFile(
+          buildExportFileName(currentProject.name, currentThread.title),
+          'text/plain'
+        );
+
+        file.write(text);
+
+        Alert.alert(
+          'Export Saved',
+          `Saved this conversation as a text file in the folder you selected.\n\n${file.uri}`
+        );
         return;
       }
 
