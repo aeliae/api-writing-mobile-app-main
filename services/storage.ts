@@ -612,24 +612,46 @@ export async function deleteFileChunks(fileId: string): Promise<void> {
   await saveFileChunks(chunks.filter(c => c.fileId !== fileId));
 }
 
+function formatExportRole(role: Message['role']): string {
+  switch (role) {
+    case 'user':
+      return 'You';
+    case 'assistant':
+      return 'Assistant';
+    default:
+      return 'System';
+  }
+}
+
 // Export conversation as text
 export async function exportConversation(projectId: string, threadId: string): Promise<string> {
-  const [project, threads, messages] = await Promise.all([
-    getProjects().then(items => items.find(p => p.id === projectId)),
-    getAllThreads(),
-    getThreadMessages(threadId),
-  ]);
-  const thread = threads.find(item => item.id === threadId);
+  await migrateLegacyMessagesToThreads();
 
-  let text = `Project: ${project?.name || 'Unknown'}\n`;
-  text += `Chat: ${thread?.title || DEFAULT_THREAD_TITLE}\n`;
-  text += `Exported: ${new Date().toLocaleString()}\n`;
-  text += `========================================\n\n`;
+  const [projects, threads, allMessages] = await Promise.all([
+    getProjects(),
+    getRawThreads(),
+    getRawMessages(),
+  ]);
+
+  const project = projects.find(item => item.id === projectId);
+  const thread = threads.find(item => item.id === threadId);
+  const messages = allMessages
+    .filter(message => message.threadId === threadId)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const lines = [
+    `Project: ${project?.name || 'Unknown'}`,
+    `Chat: ${thread?.title || DEFAULT_THREAD_TITLE}`,
+    `Exported: ${new Date().toLocaleString()}`,
+    '========================================',
+    '',
+  ];
 
   for (const message of messages) {
-    const role = message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Assistant' : 'System';
-    text += `### ${role}:\n${message.content}\n\n`;
+    lines.push(`### ${formatExportRole(message.role)}:`);
+    lines.push(message.content);
+    lines.push('');
   }
 
-  return text;
+  return lines.join('\n');
 }
