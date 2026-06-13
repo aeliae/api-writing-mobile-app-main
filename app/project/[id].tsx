@@ -79,6 +79,14 @@ function buildExportFileName(projectName: string, threadTitle: string): string {
   return `${safeProject}-${safeThread}-${timestamp}.txt`;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, onBranch, isLoading, isStreaming }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
@@ -573,19 +581,23 @@ export default function ProjectScreen() {
       }
 
       if (text.length >= LARGE_NATIVE_EXPORT_THRESHOLD) {
-        const directory = await Directory.pickDirectoryAsync();
-        const file = directory.createFile(
-          buildExportFileName(currentProject.name, currentThread.title),
-          'text/plain'
-        );
+        try {
+          const directory = await Directory.pickDirectoryAsync();
+          const file = directory.createFile(
+            buildExportFileName(currentProject.name, currentThread.title),
+            'text/plain'
+          );
 
-        file.write(text);
+          file.write(text);
 
-        Alert.alert(
-          'Export Saved',
-          `Saved this conversation as a text file in the folder you selected.\n\n${file.uri}`
-        );
-        return;
+          Alert.alert(
+            'Export Saved',
+            `Saved this conversation as a text file in the folder you selected.\n\n${file.uri}`
+          );
+          return;
+        } catch (error) {
+          console.warn('Directory export failed, falling back to text share:', error);
+        }
       }
 
       await Share.share({
@@ -594,7 +606,7 @@ export default function ProjectScreen() {
       });
     } catch (error) {
       console.error('Error exporting conversation:', error);
-      Alert.alert('Export Failed', 'Could not export this conversation. Please try again.');
+      Alert.alert('Export Failed', `Could not export this conversation.\n\n${getErrorMessage(error)}`);
     }
   };
 
