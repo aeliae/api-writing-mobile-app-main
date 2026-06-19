@@ -110,11 +110,12 @@ export default function SettingsScreen() {
   }
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
+    <>
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
       <View style={styles.header}>
         <Text style={[styles.title, { color: colors.text }]}>Settings</Text>
       </View>
@@ -350,6 +351,8 @@ export default function SettingsScreen() {
         </Text>
       </View>
 
+      </ScrollView>
+
       <Modal
         visible={diagnosticModalVisible}
         onClose={() => setDiagnosticModalVisible(false)}
@@ -379,7 +382,7 @@ export default function SettingsScreen() {
           />
         </View>
       </Modal>
-    </ScrollView>
+    </>
   );
 }
 
