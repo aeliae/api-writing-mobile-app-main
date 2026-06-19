@@ -6,13 +6,16 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Share,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
-import { Button, Input, Card, CardHeader, LoadingIndicator } from '@/components';
+import { Button, Input, Card, CardHeader, LoadingIndicator, Modal } from '@/components';
 import { AVAILABLE_MODELS } from '@/types';
+import { getStorageDiagnostics } from '@/services/storage';
 
 export default function SettingsScreen() {
   const { colors, mode, setThemeMode } = useTheme();
@@ -22,6 +25,10 @@ export default function SettingsScreen() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selectedModel, setSelectedModel] = useState(settings.selectedModel);
+  const [diagnosticModalVisible, setDiagnosticModalVisible] = useState(false);
+  const [runningDiagnostic, setRunningDiagnostic] = useState(false);
+  const [diagnosticSummary, setDiagnosticSummary] = useState('');
+  const [diagnosticExportText, setDiagnosticExportText] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -57,6 +64,41 @@ export default function SettingsScreen() {
 
   const handleThemeChange = (newMode: 'light' | 'dark' | 'system') => {
     setThemeMode(newMode);
+  };
+
+  const handleRunDiagnostic = async () => {
+    setRunningDiagnostic(true);
+    try {
+      const diagnostic = await getStorageDiagnostics();
+      setDiagnosticSummary(diagnostic.summaryText);
+      setDiagnosticExportText(diagnostic.exportText);
+      setDiagnosticModalVisible(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Diagnostic Failed', `Could not generate the storage report.\n\n${message}`);
+    } finally {
+      setRunningDiagnostic(false);
+    }
+  };
+
+  const handleExportDiagnostic = async () => {
+    if (!diagnosticExportText) return;
+
+    try {
+      if (Platform.OS === 'web') {
+        await navigator.clipboard?.writeText(diagnosticExportText);
+        Alert.alert('Copied', 'The diagnostic report was copied to your clipboard.');
+        return;
+      }
+
+      await Share.share({
+        message: diagnosticExportText,
+        title: 'Creative Writing Assistant Storage Diagnostic',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Export Failed', `Could not export the diagnostic report.\n\n${message}`);
+    }
   };
 
   if (loadingSettings) {
@@ -271,6 +313,33 @@ export default function SettingsScreen() {
         </View>
       </Card>
 
+      <Card style={styles.card}>
+        <CardHeader
+          title="Storage Diagnostic"
+          subtitle="Inspect on-device chat storage and export a report"
+        />
+        <View style={styles.sectionContent}>
+          <Text style={[styles.diagnosticDescription, { color: colors.textSecondary }]}>
+            This checks whether your phone can still see the legacy message blob, migrated per-thread shards,
+            and any mismatches between thread records and stored chat payloads.
+          </Text>
+          <Button
+            title={runningDiagnostic ? 'Running Diagnostic...' : 'Run Diagnostic'}
+            onPress={handleRunDiagnostic}
+            loading={runningDiagnostic}
+            style={styles.saveButton}
+          />
+          {diagnosticSummary ? (
+            <Button
+              title="View Latest Report"
+              onPress={() => setDiagnosticModalVisible(true)}
+              variant="secondary"
+              style={styles.secondaryButton}
+            />
+          ) : null}
+        </View>
+      </Card>
+
       {/* About */}
       <View style={styles.footer}>
         <Text style={[styles.footerText, { color: colors.textTertiary }]}>
@@ -280,6 +349,36 @@ export default function SettingsScreen() {
           Powered by OpenRouter API
         </Text>
       </View>
+
+      <Modal
+        visible={diagnosticModalVisible}
+        onClose={() => setDiagnosticModalVisible(false)}
+        title="Storage Diagnostic"
+      >
+        <Text style={[styles.modalDescription, { color: colors.textSecondary }]}>
+          This is the exact report generated on the current device. If the old chats are unreadable here, this should
+          make that visible.
+        </Text>
+        <View style={[styles.diagnosticPreview, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+          <Text style={[styles.diagnosticPreviewText, { color: colors.text }]}>
+            {diagnosticSummary || 'No diagnostic report has been generated yet.'}
+          </Text>
+        </View>
+        <View style={styles.diagnosticActions}>
+          <Button
+            title="Close"
+            onPress={() => setDiagnosticModalVisible(false)}
+            variant="secondary"
+            style={styles.diagnosticActionButton}
+          />
+          <Button
+            title="Export Report"
+            onPress={handleExportDiagnostic}
+            disabled={!diagnosticExportText}
+            style={styles.diagnosticActionButton}
+          />
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -306,8 +405,15 @@ const styles = StyleSheet.create({
   sectionContent: {
     marginTop: 8,
   },
+  secondaryButton: {
+    marginTop: 10,
+  },
   saveButton: {
     marginTop: 12,
+  },
+  diagnosticDescription: {
+    fontSize: 13,
+    lineHeight: 20,
   },
   modelList: {
     marginTop: 8,
@@ -370,5 +476,28 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 13,
+  },
+  modalDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  diagnosticPreview: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+  },
+  diagnosticPreviewText: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  },
+  diagnosticActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 18,
+  },
+  diagnosticActionButton: {
+    flex: 1,
   },
 });
