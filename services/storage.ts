@@ -35,6 +35,15 @@ export interface StorageDiagnosticsReport {
     keyPresent: boolean;
     serializedLength: number;
     normalizedMessageCount: number;
+    topLevelKind: 'missing' | 'invalid' | 'array' | 'object' | 'primitive';
+    topLevelArrayLength?: number;
+    topLevelKeys?: string[];
+    deepExtractedMessageCount: number;
+    nestedArraySamples: Array<{
+      path: string;
+      length: number;
+      sampleKeys: string[];
+    }>;
   };
   shardedMessages: {
     indexedThreadIds: string[];
@@ -63,10 +72,15 @@ function isRecord(value: unknown): value is UnknownRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function parseStoredJson(data: string | null): unknown {
+  if (!data) return null;
+  return JSON.parse(data);
+}
+
 function parseStoredCollection(data: string | null, preferredKeys: string[] = []): unknown[] {
   if (!data) return [];
 
-  const parsed = JSON.parse(data);
+  const parsed = parseStoredJson(data);
 
   if (Array.isArray(parsed)) {
     return parsed;
@@ -109,6 +123,19 @@ function readString(...values: unknown[]): string | undefined {
   }
 
   return undefined;
+}
+
+function dedupeMessages(messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  const deduped: Message[] = [];
+
+  for (const message of messages) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    deduped.push(message);
+  }
+
+  return deduped;
 }
 
 function readText(...values: unknown[]): string | undefined {
@@ -328,16 +355,104 @@ async function getRawMessagesFromSerialized(
     .filter((message): message is Message => message !== null);
 }
 
+function extractMessagesRecursively(
+  value: unknown,
+  threadProjectMap: Map<string, string>,
+  results: Message[],
+  visited: Set<unknown>,
+  depth = 0
+): void {
+  if (!value || depth > 8) return;
+  if (typeof value !== 'object') return;
+  if (visited.has(value)) return;
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractMessagesRecursively(item, threadProjectMap, results, visited, depth + 1);
+    }
+    return;
+  }
+
+  const normalized = normalizeStoredMessage(value, threadProjectMap);
+  if (normalized) {
+    results.push(normalized);
+  }
+
+  for (const nested of Object.values(value)) {
+    if (nested && typeof nested === 'object') {
+      extractMessagesRecursively(nested, threadProjectMap, results, visited, depth + 1);
+    }
+  }
+}
+
+async function getDeepLegacyMessages(
+  data: string | null,
+  threadProjectMap: Map<string, string>
+): Promise<Message[]> {
+  if (!data) return [];
+
+  try {
+    const parsed = parseStoredJson(data);
+    const results: Message[] = [];
+    extractMessagesRecursively(parsed, threadProjectMap, results, new Set<unknown>());
+    return dedupeMessages(results);
+  } catch (error) {
+    console.error('Error deeply scanning legacy messages:', error);
+    return [];
+  }
+}
+
 async function getRawMessagesFromLegacyStorage(): Promise<Message[]> {
   try {
     const threads = await getRawThreads();
     const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
     const data = await AsyncStorage.getItem(KEYS.MESSAGES);
-    return getRawMessagesFromSerialized(data, threadProjectMap);
+    const [directMessages, deepMessages] = await Promise.all([
+      getRawMessagesFromSerialized(data, threadProjectMap),
+      getDeepLegacyMessages(data, threadProjectMap),
+    ]);
+    return dedupeMessages([...directMessages, ...deepMessages]);
   } catch (error) {
     console.error('Error loading legacy messages:', error);
     return [];
   }
+}
+
+function summarizeNestedArrays(
+  value: unknown,
+  path = 'root',
+  results: Array<{ path: string; length: number; sampleKeys: string[] }> = [],
+  depth = 0
+): Array<{ path: string; length: number; sampleKeys: string[] }> {
+  if (!value || depth > 5 || results.length >= 12) {
+    return results;
+  }
+
+  if (Array.isArray(value)) {
+    const sampleObject = value.find(item => isRecord(item));
+    results.push({
+      path,
+      length: value.length,
+      sampleKeys: sampleObject ? Object.keys(sampleObject).slice(0, 8) : [],
+    });
+
+    for (let index = 0; index < Math.min(value.length, 4); index += 1) {
+      summarizeNestedArrays(value[index], `${path}[${index}]`, results, depth + 1);
+    }
+    return results;
+  }
+
+  if (isRecord(value)) {
+    for (const [key, nested] of Object.entries(value).slice(0, 12)) {
+      summarizeNestedArrays(nested, `${path}.${key}`, results, depth + 1);
+      if (results.length >= 12) {
+        break;
+      }
+    }
+  }
+
+  return results;
 }
 
 async function getRawMessagesForThread(threadId: string): Promise<Message[] | null> {
@@ -1042,17 +1157,43 @@ export async function getStorageDiagnostics(): Promise<{
     .filter(threadId => threadId.trim().length > 0)
     .sort();
 
-  const [legacyMessages, shardEntries] = await Promise.all([
+  const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+  const [legacyMessages, deepLegacyMessages, shardEntries] = await Promise.all([
     getRawMessagesFromLegacyStorage(),
+    getDeepLegacyMessages(legacyMessagesRaw, threadProjectMap),
     shardThreadIds.length > 0
       ? AsyncStorage.multiGet(shardThreadIds.map(getThreadMessagesStorageKey))
       : Promise.resolve([] as [string, string | null][]),
   ]);
-
-  const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
   const shardMessages = shardEntries.flatMap(([, data]) => parseStoredCollection(data, ['messages', 'items']))
     .map(message => normalizeStoredMessage(message, threadProjectMap))
     .filter((message): message is Message => message !== null);
+
+  let legacyTopLevelKind: StorageDiagnosticsReport['legacyMessages']['topLevelKind'] = 'missing';
+  let legacyTopLevelArrayLength: number | undefined;
+  let legacyTopLevelKeys: string[] | undefined;
+  let legacyNestedArraySamples: Array<{ path: string; length: number; sampleKeys: string[] }> = [];
+
+  if (legacyMessagesRaw) {
+    try {
+      const parsedLegacy = parseStoredJson(legacyMessagesRaw);
+      if (Array.isArray(parsedLegacy)) {
+        legacyTopLevelKind = 'array';
+        legacyTopLevelArrayLength = parsedLegacy.length;
+      } else if (isRecord(parsedLegacy)) {
+        legacyTopLevelKind = 'object';
+        legacyTopLevelKeys = Object.keys(parsedLegacy).slice(0, 20);
+      } else if (parsedLegacy === null) {
+        legacyTopLevelKind = 'missing';
+      } else {
+        legacyTopLevelKind = 'primitive';
+      }
+
+      legacyNestedArraySamples = summarizeNestedArrays(parsedLegacy);
+    } catch {
+      legacyTopLevelKind = 'invalid';
+    }
+  }
 
   const messageCountByThreadId = new Map<string, number>();
   for (const message of shardMessages) {
@@ -1115,6 +1256,11 @@ export async function getStorageDiagnostics(): Promise<{
       keyPresent: legacyMessagesRaw !== null,
       serializedLength: legacyMessagesRaw?.length || 0,
       normalizedMessageCount: legacyMessages.length,
+      topLevelKind: legacyTopLevelKind,
+      topLevelArrayLength: legacyTopLevelArrayLength,
+      topLevelKeys: legacyTopLevelKeys,
+      deepExtractedMessageCount: deepLegacyMessages.length,
+      nestedArraySamples: legacyNestedArraySamples,
     },
     shardedMessages: {
       indexedThreadIds,
@@ -1140,6 +1286,8 @@ export async function getStorageDiagnostics(): Promise<{
     `Legacy cw_messages present: ${report.legacyMessages.keyPresent ? 'yes' : 'no'}`,
     `Legacy cw_messages size: ${report.legacyMessages.serializedLength} chars`,
     `Legacy normalized messages: ${report.legacyMessages.normalizedMessageCount}`,
+    `Legacy deep-extracted messages: ${report.legacyMessages.deepExtractedMessageCount}`,
+    `Legacy top-level kind: ${report.legacyMessages.topLevelKind}`,
     `Shard keys found: ${report.shardedMessages.shardCount}`,
     `Indexed shard thread ids: ${report.shardedMessages.indexedThreadIds.length}`,
     `Sharded normalized messages: ${report.shardedMessages.normalizedMessageCount}`,
