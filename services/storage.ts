@@ -273,29 +273,60 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
   let threadsChanged = false;
   let messagesChanged = false;
   const nextThreads = [...existingThreads];
+  const ensureProjectThread = (projectId: string, preferredThreadId?: string, fallbackDate?: string): ChatThread => {
+    const projectThreads = projectThreadMap.get(projectId) || [];
+
+    if (preferredThreadId) {
+      const existingThread = threadMap.get(preferredThreadId);
+      if (existingThread) {
+        return existingThread;
+      }
+    }
+
+    if (!preferredThreadId && projectThreads.length > 0) {
+      return projectThreads[0];
+    }
+
+    const project = projects.find(p => p.id === projectId);
+    const createdAt = fallbackDate || project?.updatedAt || new Date().toISOString();
+    const thread: ChatThread = {
+      id: preferredThreadId || generateId(),
+      projectId,
+      title: DEFAULT_THREAD_TITLE,
+      createdAt,
+      updatedAt: project?.updatedAt || createdAt,
+    };
+
+    nextThreads.push(thread);
+    threadMap.set(thread.id, thread);
+    projectThreadMap.set(projectId, [...projectThreads, thread]);
+    threadsChanged = true;
+    return thread;
+  };
+
+  const bumpThreadTimestamp = (thread: ChatThread, candidateDate?: string) => {
+    if (!candidateDate) return;
+
+    const candidateTime = new Date(candidateDate).getTime();
+    const currentTime = new Date(thread.updatedAt).getTime();
+    if (Number.isNaN(candidateTime) || candidateTime <= currentTime) return;
+
+    thread.updatedAt = new Date(candidateTime).toISOString();
+    threadsChanged = true;
+  };
+
   const nextMessages = existingMessages.map((message) => {
-    // Only migrate truly legacy messages that never had a thread id.
+    const fallbackDate = message.createdAt || new Date().toISOString();
+
+    // Recover orphaned messages whose thread ids no longer exist in storage.
     if (message.threadId) {
+      const thread = ensureProjectThread(message.projectId, message.threadId, fallbackDate);
+      bumpThreadTimestamp(thread, fallbackDate);
       return message;
     }
 
-    let thread = (projectThreadMap.get(message.projectId) || [])[0];
-
-    if (!thread) {
-      const project = projects.find(p => p.id === message.projectId);
-      const fallbackDate = message.createdAt || new Date().toISOString();
-      thread = {
-        id: generateId(),
-        projectId: message.projectId,
-        title: DEFAULT_THREAD_TITLE,
-        createdAt: fallbackDate,
-        updatedAt: project?.updatedAt || fallbackDate,
-      };
-      nextThreads.push(thread);
-      threadMap.set(thread.id, thread);
-      projectThreadMap.set(message.projectId, [thread]);
-      threadsChanged = true;
-    }
+    const thread = ensureProjectThread(message.projectId, undefined, fallbackDate);
+    bumpThreadTimestamp(thread, fallbackDate);
 
     messagesChanged = true;
     return { ...message, threadId: thread.id };
