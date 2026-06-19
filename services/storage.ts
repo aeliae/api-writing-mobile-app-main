@@ -321,6 +321,22 @@ async function getKnownMessageThreadIds(): Promise<string[]> {
   }
 }
 
+async function saveMessagesForThread(threadId: string, messages: Message[]): Promise<void> {
+  const threadMessages = messages.filter(message => message.threadId === threadId);
+  const knownThreadIds = await getKnownMessageThreadIds();
+
+  if (threadMessages.length === 0) {
+    await AsyncStorage.removeItem(getThreadMessagesStorageKey(threadId));
+    if (knownThreadIds.includes(threadId)) {
+      await saveStoredMessageThreadIds(knownThreadIds.filter(id => id !== threadId));
+    }
+    return;
+  }
+
+  await AsyncStorage.setItem(getThreadMessagesStorageKey(threadId), JSON.stringify(threadMessages));
+  await saveStoredMessageThreadIds([...knownThreadIds, threadId]);
+}
+
 async function touchProject(projectId: string, updatedAt = new Date().toISOString()): Promise<void> {
   const projects = await getProjects();
   const index = projects.findIndex(p => p.id === projectId);
@@ -684,18 +700,14 @@ export async function createBranchedThread(
   fromMessageId: string,
   title?: string
 ): Promise<ChatThread> {
-  const [threads, allMessages] = await Promise.all([
-    getAllThreads(),
-    getAllMessages(),
-  ]);
+  const threads = await getAllThreads();
 
   const sourceThread = threads.find(thread => thread.id === sourceThreadId);
   if (!sourceThread) {
     throw new Error('Source chat could not be found.');
   }
 
-  const sourceMessages = allMessages
-    .filter(message => message.threadId === sourceThreadId)
+  const sourceMessages = (await getThreadMessages(sourceThreadId))
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const cutoffIndex = sourceMessages.findIndex(message => message.id === fromMessageId);
 
@@ -723,7 +735,7 @@ export async function createBranchedThread(
     }));
 
   await saveThreads([...threads, newThread]);
-  await saveMessages([...allMessages, ...copiedMessages]);
+  await saveMessagesForThread(newThread.id, copiedMessages);
   await touchProject(sourceThread.projectId, timestamp);
 
   return newThread;
@@ -752,8 +764,7 @@ export async function deleteThread(id: string): Promise<void> {
   if (!thread) return;
 
   await saveThreads(threads.filter(item => item.id !== id));
-  const messages = await getRawMessages();
-  await saveMessages(messages.filter(message => message.threadId !== id));
+  await saveMessagesForThread(id, []);
   await touchProject(thread.projectId);
 }
 
@@ -808,14 +819,13 @@ export async function getMessages(projectId: string, threadId?: string): Promise
 }
 
 export async function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Promise<Message> {
-  const allMessages = await getAllMessages();
   const newMessage: Message = {
     ...message,
     id: generateId(),
     createdAt: new Date().toISOString(),
   };
-  allMessages.push(newMessage);
-  await saveMessages(allMessages);
+  const threadMessages = await getThreadMessages(message.threadId);
+  await saveMessagesForThread(message.threadId, [...threadMessages, newMessage]);
   await updateThread(message.threadId, {});
   await touchProject(message.projectId, newMessage.createdAt);
   return newMessage;
@@ -846,14 +856,8 @@ export async function truncateThreadMessages(threadId: string, fromMessageId: st
   const cutoffIndex = threadMessages.findIndex(message => message.id === fromMessageId);
   if (cutoffIndex === -1) return;
 
-  const idsToRemove = new Set(
-    threadMessages
-      .slice(inclusive ? cutoffIndex : cutoffIndex + 1)
-      .map(message => message.id)
-  );
-
-  const allMessages = await getAllMessages();
-  await saveMessages(allMessages.filter(message => !idsToRemove.has(message.id)));
+  const keptMessages = threadMessages.slice(0, inclusive ? cutoffIndex : cutoffIndex + 1);
+  await saveMessagesForThread(threadId, keptMessages);
 
   const threads = await getAllThreads();
   const thread = threads.find(item => item.id === threadId);
@@ -896,8 +900,7 @@ export async function deleteMessage(id: string): Promise<void> {
 export async function clearThreadMessages(threadId: string): Promise<void> {
   const threads = await getAllThreads();
   const thread = threads.find(item => item.id === threadId);
-  const allMessages = await getAllMessages();
-  await saveMessages(allMessages.filter(message => message.threadId !== threadId));
+  await saveMessagesForThread(threadId, []);
   if (thread) {
     await updateThread(threadId, {});
   }
