@@ -17,6 +17,48 @@ const DEFAULT_THREAD_TITLE = 'Main Chat';
 
 type UnknownRecord = Record<string, unknown>;
 
+export interface StorageDiagnosticsReport {
+  generatedAt: string;
+  keyStats: {
+    allKeyCount: number;
+    relevantKeys: string[];
+  };
+  projects: {
+    count: number;
+    ids: string[];
+  };
+  threads: {
+    count: number;
+    ids: string[];
+  };
+  legacyMessages: {
+    keyPresent: boolean;
+    serializedLength: number;
+    normalizedMessageCount: number;
+  };
+  shardedMessages: {
+    indexedThreadIds: string[];
+    shardThreadIds: string[];
+    shardCount: number;
+    normalizedMessageCount: number;
+    totalSerializedLength: number;
+  };
+  threadBreakdown: Array<{
+    threadId: string;
+    projectId: string;
+    title: string;
+    messageCount: number;
+    shardPresent: boolean;
+  }>;
+  mismatches: {
+    threadsWithoutMessages: string[];
+    shardThreadIdsWithoutThreadRecord: string[];
+    indexedThreadIdsWithoutShard: string[];
+    legacyThreadIdsWithoutThreadRecord: string[];
+  };
+  likelyIssues: string[];
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -971,6 +1013,156 @@ function formatExportRole(role: Message['role']): string {
     default:
       return 'System';
   }
+}
+
+export async function getStorageDiagnostics(): Promise<{
+  report: StorageDiagnosticsReport;
+  summaryText: string;
+  exportText: string;
+}> {
+  const generatedAt = new Date().toISOString();
+  const allKeys = await AsyncStorage.getAllKeys();
+  const relevantKeys = allKeys.filter(
+    key =>
+      key.startsWith('cw_') ||
+      key.startsWith('expo-') ||
+      key.includes('message')
+  ).sort();
+
+  const [projects, threads, indexedThreadIds, legacyMessagesRaw] = await Promise.all([
+    getProjects(),
+    getRawThreads(),
+    getStoredMessageThreadIds(),
+    AsyncStorage.getItem(KEYS.MESSAGES),
+  ]);
+
+  const shardThreadIds = allKeys
+    .filter(key => key.startsWith('cw_messages_thread_'))
+    .map(key => key.slice('cw_messages_thread_'.length))
+    .filter(threadId => threadId.trim().length > 0)
+    .sort();
+
+  const [legacyMessages, shardEntries] = await Promise.all([
+    getRawMessagesFromLegacyStorage(),
+    shardThreadIds.length > 0
+      ? AsyncStorage.multiGet(shardThreadIds.map(getThreadMessagesStorageKey))
+      : Promise.resolve([] as [string, string | null][]),
+  ]);
+
+  const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+  const shardMessages = shardEntries.flatMap(([, data]) => parseStoredCollection(data, ['messages', 'items']))
+    .map(message => normalizeStoredMessage(message, threadProjectMap))
+    .filter((message): message is Message => message !== null);
+
+  const messageCountByThreadId = new Map<string, number>();
+  for (const message of shardMessages) {
+    messageCountByThreadId.set(message.threadId, (messageCountByThreadId.get(message.threadId) || 0) + 1);
+  }
+
+  const threadBreakdown = threads.map(thread => ({
+    threadId: thread.id,
+    projectId: thread.projectId,
+    title: thread.title,
+    messageCount: messageCountByThreadId.get(thread.id) || 0,
+    shardPresent: shardThreadIds.includes(thread.id),
+  }));
+
+  const threadsWithoutMessages = threadBreakdown
+    .filter(thread => thread.messageCount === 0)
+    .map(thread => thread.threadId);
+  const shardThreadIdsWithoutThreadRecord = shardThreadIds.filter(threadId => !threadProjectMap.has(threadId));
+  const indexedThreadIdsWithoutShard = indexedThreadIds.filter(threadId => !shardThreadIds.includes(threadId));
+  const legacyThreadIdsWithoutThreadRecord = Array.from(
+    new Set(
+      legacyMessages
+        .map(message => message.threadId)
+        .filter(threadId => !!threadId && !threadProjectMap.has(threadId))
+    )
+  );
+
+  const likelyIssues: string[] = [];
+  if (legacyMessagesRaw && legacyMessagesRaw.length > 250000 && shardThreadIds.length === 0) {
+    likelyIssues.push('Large legacy cw_messages blob detected with no thread shards yet. This is a strong candidate for device-specific AsyncStorage read failures.');
+  }
+  if (threads.length > 0 && threadsWithoutMessages.length === threads.length) {
+    likelyIssues.push('All stored thread records currently resolve to zero sharded messages on this device.');
+  }
+  if (legacyMessages.length > 0 && shardMessages.length === 0) {
+    likelyIssues.push('Legacy messages are still present, but no migrated thread shards were detected.');
+  }
+  if (shardThreadIdsWithoutThreadRecord.length > 0) {
+    likelyIssues.push('Some message shard keys exist without matching thread records.');
+  }
+  if (indexedThreadIdsWithoutShard.length > 0) {
+    likelyIssues.push('The shard index references thread ids that do not currently have shard keys.');
+  }
+
+  const report: StorageDiagnosticsReport = {
+    generatedAt,
+    keyStats: {
+      allKeyCount: allKeys.length,
+      relevantKeys,
+    },
+    projects: {
+      count: projects.length,
+      ids: projects.map(project => project.id),
+    },
+    threads: {
+      count: threads.length,
+      ids: threads.map(thread => thread.id),
+    },
+    legacyMessages: {
+      keyPresent: legacyMessagesRaw !== null,
+      serializedLength: legacyMessagesRaw?.length || 0,
+      normalizedMessageCount: legacyMessages.length,
+    },
+    shardedMessages: {
+      indexedThreadIds,
+      shardThreadIds,
+      shardCount: shardThreadIds.length,
+      normalizedMessageCount: shardMessages.length,
+      totalSerializedLength: shardEntries.reduce((total, [, value]) => total + (value?.length || 0), 0),
+    },
+    threadBreakdown,
+    mismatches: {
+      threadsWithoutMessages,
+      shardThreadIdsWithoutThreadRecord,
+      indexedThreadIdsWithoutShard,
+      legacyThreadIdsWithoutThreadRecord,
+    },
+    likelyIssues,
+  };
+
+  const summaryLines = [
+    `Generated: ${generatedAt}`,
+    `Projects: ${report.projects.count}`,
+    `Threads: ${report.threads.count}`,
+    `Legacy cw_messages present: ${report.legacyMessages.keyPresent ? 'yes' : 'no'}`,
+    `Legacy cw_messages size: ${report.legacyMessages.serializedLength} chars`,
+    `Legacy normalized messages: ${report.legacyMessages.normalizedMessageCount}`,
+    `Shard keys found: ${report.shardedMessages.shardCount}`,
+    `Indexed shard thread ids: ${report.shardedMessages.indexedThreadIds.length}`,
+    `Sharded normalized messages: ${report.shardedMessages.normalizedMessageCount}`,
+    `Threads without messages: ${report.mismatches.threadsWithoutMessages.length}`,
+    `Shard ids without thread record: ${report.mismatches.shardThreadIdsWithoutThreadRecord.length}`,
+    `Index ids without shard: ${report.mismatches.indexedThreadIdsWithoutShard.length}`,
+  ];
+
+  if (likelyIssues.length > 0) {
+    summaryLines.push('', 'Likely issues:');
+    for (const issue of likelyIssues) {
+      summaryLines.push(`- ${issue}`);
+    }
+  }
+
+  const summaryText = summaryLines.join('\n');
+  const exportText = `${summaryText}\n\nFull report:\n${JSON.stringify(report, null, 2)}`;
+
+  return {
+    report,
+    summaryText,
+    exportText,
+  };
 }
 
 // Export conversation as text
