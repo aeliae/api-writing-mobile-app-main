@@ -14,11 +14,186 @@ const KEYS = {
 
 const DEFAULT_THREAD_TITLE = 'Main Chat';
 
-function parseStoredArray<T>(data: string | null): T[] {
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseStoredCollection(data: string | null, preferredKeys: string[] = []): unknown[] {
   if (!data) return [];
 
   const parsed = JSON.parse(data);
-  return Array.isArray(parsed) ? parsed : [];
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (!isRecord(parsed)) {
+    return [];
+  }
+
+  for (const key of preferredKeys) {
+    const candidate = parsed[key];
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+
+    if (isRecord(candidate)) {
+      const nestedValues = Object.values(candidate);
+      if (nestedValues.every(item => isRecord(item))) {
+        return nestedValues;
+      }
+    }
+  }
+
+  const values = Object.values(parsed);
+  if (values.every(item => isRecord(item))) {
+    return values;
+  }
+
+  return [];
+}
+
+function readString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readDate(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+
+    const timestamp = new Date(value).getTime();
+    if (!Number.isNaN(timestamp)) {
+      return new Date(timestamp).toISOString();
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeStoredProject(raw: unknown): Project | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.projectId, raw.project_id);
+  const name = readString(raw.name, raw.title);
+  if (!id || !name) return null;
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp) || new Date().toISOString();
+  const updatedAt = readDate(raw.updatedAt, raw.updated_at, raw.lastUpdated, raw.timestamp, raw.createdAt) || createdAt;
+
+  return {
+    id,
+    name,
+    createdAt,
+    updatedAt,
+    systemPrompt: readText(raw.systemPrompt, raw.system_prompt) || '',
+    storyOutline: readText(raw.storyOutline, raw.story_outline) || '',
+  };
+}
+
+function normalizeStoredThread(raw: unknown): ChatThread | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.threadId, raw.thread_id, raw.chatId, raw.chat_id);
+  const projectId = readString(raw.projectId, raw.project_id, raw.projectID);
+  if (!id || !projectId) return null;
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp) || new Date().toISOString();
+  const updatedAt = readDate(raw.updatedAt, raw.updated_at, raw.lastUpdated, raw.timestamp, raw.createdAt) || createdAt;
+
+  return {
+    id,
+    projectId,
+    title: readString(raw.title, raw.name, raw.threadTitle, raw.chatTitle) || DEFAULT_THREAD_TITLE,
+    parentThreadId: readString(raw.parentThreadId, raw.parent_thread_id, raw.parentId),
+    branchFromMessageId: readString(raw.branchFromMessageId, raw.branch_from_message_id, raw.fromMessageId),
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeStoredRole(value: unknown): Message['role'] | null {
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'user' || normalized === 'assistant' || normalized === 'system') {
+    return normalized;
+  }
+
+  if (normalized === 'human') return 'user';
+  if (normalized === 'ai' || normalized === 'bot' || normalized === 'model') return 'assistant';
+  return null;
+}
+
+function normalizeStoredMessage(raw: unknown, threadProjectMap: Map<string, string>): Message | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.messageId, raw.message_id);
+  const threadId = readString(
+    raw.threadId,
+    raw.thread_id,
+    raw.chatId,
+    raw.chat_id,
+    raw.conversationId,
+    raw.conversation_id
+  ) || '';
+  const projectId = readString(raw.projectId, raw.project_id, raw.projectID) || threadProjectMap.get(threadId);
+  const role = normalizeStoredRole(raw.role ?? raw.sender ?? raw.author ?? raw.type);
+  const content = readText(raw.content, raw.text, raw.message, raw.body, raw.output);
+
+  if (!id || !projectId || !role || content === undefined) {
+    return null;
+  }
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp, raw.date) || new Date().toISOString();
+  const tokens = readNumber(raw.tokens, raw.tokenCount, raw.token_count, raw.completionTokens);
+
+  return {
+    id,
+    projectId,
+    threadId,
+    role,
+    content,
+    createdAt,
+    ...(tokens !== undefined ? { tokens } : {}),
+  };
 }
 
 function parseStoredObject<T extends object>(data: string | null, fallback: T): T {
@@ -50,7 +225,9 @@ async function touchProject(projectId: string, updatedAt = new Date().toISOStrin
 async function getRawThreads(): Promise<ChatThread[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.THREADS);
-    return parseStoredArray<ChatThread>(data);
+    return parseStoredCollection(data, ['threads', 'items'])
+      .map(normalizeStoredThread)
+      .filter((thread): thread is ChatThread => thread !== null);
   } catch (error) {
     console.error('Error loading threads:', error);
     return [];
@@ -64,7 +241,12 @@ async function saveThreads(threads: ChatThread[]): Promise<void> {
 async function getRawMessages(): Promise<Message[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.MESSAGES);
-    return parseStoredArray<Message>(data);
+    const threads = await getRawThreads();
+    const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+
+    return parseStoredCollection(data, ['messages', 'items'])
+      .map(message => normalizeStoredMessage(message, threadProjectMap))
+      .filter((message): message is Message => message !== null);
   } catch (error) {
     console.error('Error loading messages:', error);
     return [];
@@ -132,7 +314,9 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
 export async function getProjects(): Promise<Project[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECTS);
-    return parseStoredArray<Project>(data);
+    return parseStoredCollection(data, ['projects', 'items'])
+      .map(normalizeStoredProject)
+      .filter((project): project is Project => project !== null);
   } catch (error) {
     console.error('Error loading projects:', error);
     return [];
@@ -400,7 +584,7 @@ export async function clearThreadMessages(threadId: string): Promise<void> {
 export async function getAllMemories(): Promise<MemoryEntry[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.MEMORIES);
-    return parseStoredArray<MemoryEntry>(data);
+    return parseStoredCollection(data, ['memories', 'items']) as MemoryEntry[];
   } catch (error) {
     console.error('Error loading memories:', error);
     return [];
@@ -494,7 +678,7 @@ export async function recordApiUsage(usage: ApiUsage): Promise<void> {
 export async function getAllFiles(): Promise<ProjectFile[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECT_FILES);
-    return parseStoredArray<ProjectFile>(data);
+    return parseStoredCollection(data, ['files', 'items']) as ProjectFile[];
   } catch (error) {
     console.error('Error loading project files:', error);
     return [];
@@ -553,7 +737,7 @@ export async function deleteProjectFile(id: string): Promise<void> {
 export async function getAllFileChunks(): Promise<ProjectFileChunk[]> {
   try {
     const data = await AsyncStorage.getItem(KEYS.PROJECT_FILE_CHUNKS);
-    return parseStoredArray<ProjectFileChunk>(data);
+    return parseStoredCollection(data, ['chunks', 'items']) as ProjectFileChunk[];
   } catch (error) {
     console.error('Error loading file chunks:', error);
     return [];
