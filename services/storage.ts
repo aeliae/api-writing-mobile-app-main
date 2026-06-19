@@ -6,6 +6,7 @@ const KEYS = {
   PROJECTS: 'cw_projects',
   THREADS: 'cw_threads',
   MESSAGES: 'cw_messages',
+  MESSAGE_THREAD_IDS: 'cw_message_thread_ids',
   MEMORIES: 'cw_memories',
   PROJECT_FILES: 'cw_project_files',
   PROJECT_FILE_CHUNKS: 'cw_project_file_chunks',
@@ -213,6 +214,44 @@ function getDefaultBranchTitle(sourceThread: ChatThread, threads: ChatThread[]):
   return `${baseTitle} Branch ${siblingCount + 1}`;
 }
 
+function getThreadMessagesStorageKey(threadId: string): string {
+  return `cw_messages_thread_${threadId}`;
+}
+
+async function getStoredMessageThreadIds(): Promise<string[]> {
+  try {
+    const data = await AsyncStorage.getItem(KEYS.MESSAGE_THREAD_IDS);
+    return parseStoredCollection(data, ['threadIds', 'items'])
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  } catch (error) {
+    console.error('Error loading message thread index:', error);
+    return [];
+  }
+}
+
+async function saveStoredMessageThreadIds(threadIds: string[]): Promise<void> {
+  const uniqueThreadIds = Array.from(new Set(threadIds.filter(id => id.trim().length > 0)));
+  await AsyncStorage.setItem(KEYS.MESSAGE_THREAD_IDS, JSON.stringify(uniqueThreadIds));
+}
+
+async function getKnownMessageThreadIds(): Promise<string[]> {
+  const indexedThreadIds = await getStoredMessageThreadIds();
+  if (indexedThreadIds.length > 0) {
+    return indexedThreadIds;
+  }
+
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    return allKeys
+      .filter(key => key.startsWith('cw_messages_thread_'))
+      .map(key => key.slice('cw_messages_thread_'.length))
+      .filter(threadId => threadId.trim().length > 0);
+  } catch (error) {
+    console.error('Error scanning message shard keys:', error);
+    return [];
+  }
+}
+
 async function touchProject(projectId: string, updatedAt = new Date().toISOString()): Promise<void> {
   const projects = await getProjects();
   const index = projects.findIndex(p => p.id === projectId);
@@ -238,19 +277,71 @@ async function saveThreads(threads: ChatThread[]): Promise<void> {
   await AsyncStorage.setItem(KEYS.THREADS, JSON.stringify(threads));
 }
 
-async function getRawMessages(): Promise<Message[]> {
+async function getRawMessagesFromSerialized(
+  data: string | null,
+  threadProjectMap: Map<string, string>
+): Promise<Message[]> {
+  return parseStoredCollection(data, ['messages', 'items'])
+    .map(message => normalizeStoredMessage(message, threadProjectMap))
+    .filter((message): message is Message => message !== null);
+}
+
+async function getRawMessagesFromLegacyStorage(): Promise<Message[]> {
   try {
-    const data = await AsyncStorage.getItem(KEYS.MESSAGES);
     const threads = await getRawThreads();
     const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
-
-    return parseStoredCollection(data, ['messages', 'items'])
-      .map(message => normalizeStoredMessage(message, threadProjectMap))
-      .filter((message): message is Message => message !== null);
+    const data = await AsyncStorage.getItem(KEYS.MESSAGES);
+    return getRawMessagesFromSerialized(data, threadProjectMap);
   } catch (error) {
-    console.error('Error loading messages:', error);
+    console.error('Error loading legacy messages:', error);
     return [];
   }
+}
+
+async function getRawMessagesForThread(threadId: string): Promise<Message[] | null> {
+  try {
+    const threads = await getRawThreads();
+    const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+    const data = await AsyncStorage.getItem(getThreadMessagesStorageKey(threadId));
+    if (data !== null) {
+      return getRawMessagesFromSerialized(data, threadProjectMap);
+    }
+
+    const threadIds = await getKnownMessageThreadIds();
+    if (threadIds.includes(threadId)) {
+      return [];
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`Error loading messages for thread ${threadId}:`, error);
+    return null;
+  }
+}
+
+async function getRawMessages(): Promise<Message[]> {
+  const threadIds = await getKnownMessageThreadIds();
+
+  if (threadIds.length > 0) {
+    try {
+      const threads = await getRawThreads();
+      const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+      const entries = await AsyncStorage.multiGet(threadIds.map(getThreadMessagesStorageKey));
+      return entries.flatMap(([, data]) => parseStoredCollection(data, ['messages', 'items']))
+        .map(message => normalizeStoredMessage(message, threadProjectMap))
+        .filter((message): message is Message => message !== null);
+    } catch (error) {
+      console.error('Error loading sharded messages:', error);
+    }
+  }
+
+  const legacyMessages = await getRawMessagesFromLegacyStorage();
+
+  if (legacyMessages.length > 0) {
+    await saveMessages(legacyMessages);
+  }
+
+  return legacyMessages;
 }
 
 async function migrateLegacyMessagesToThreads(): Promise<void> {
@@ -386,9 +477,13 @@ export async function deleteProject(id: string): Promise<void> {
   const projects = await getProjects();
   await saveProjects(projects.filter(p => p.id !== id));
   const threads = await getRawThreads();
+  const deletedThreadIds = threads.filter(t => t.projectId === id).map(thread => thread.id);
   await saveThreads(threads.filter(t => t.projectId !== id));
   const messages = await getRawMessages();
   await saveMessages(messages.filter(msg => msg.projectId !== id));
+  if (deletedThreadIds.length > 0) {
+    await AsyncStorage.multiRemove(deletedThreadIds.map(getThreadMessagesStorageKey));
+  }
   const memories = await getAllMemories();
   await saveMemories(memories.filter(m => m.projectId !== id));
   const files = await getAllFiles();
@@ -512,10 +607,43 @@ export async function getAllMessages(): Promise<Message[]> {
 }
 
 export async function saveMessages(messages: Message[]): Promise<void> {
-  await AsyncStorage.setItem(KEYS.MESSAGES, JSON.stringify(messages));
+  const groupedMessages = new Map<string, Message[]>();
+
+  for (const message of messages) {
+    if (!message.threadId) continue;
+    const threadMessages = groupedMessages.get(message.threadId) || [];
+    threadMessages.push(message);
+    groupedMessages.set(message.threadId, threadMessages);
+  }
+
+  const nextThreadIds = Array.from(groupedMessages.keys());
+  const previousThreadIds = await getStoredMessageThreadIds();
+  const staleThreadIds = previousThreadIds.filter(threadId => !groupedMessages.has(threadId));
+
+  await AsyncStorage.multiSet(
+    nextThreadIds.map((threadId) => [
+      getThreadMessagesStorageKey(threadId),
+      JSON.stringify(groupedMessages.get(threadId)),
+    ])
+  );
+
+  if (staleThreadIds.length > 0) {
+    await AsyncStorage.multiRemove(staleThreadIds.map(getThreadMessagesStorageKey));
+  }
+
+  await saveStoredMessageThreadIds(nextThreadIds);
 }
 
 export async function getMessages(projectId: string, threadId?: string): Promise<Message[]> {
+  if (threadId) {
+    const threadMessages = await getRawMessagesForThread(threadId);
+    if (threadMessages) {
+      return threadMessages
+        .filter(message => message.projectId === projectId)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    }
+  }
+
   const allMessages = await getAllMessages();
   return allMessages
     .filter(m => m.projectId === projectId && (!threadId || m.threadId === threadId))
@@ -585,6 +713,13 @@ export async function clearProjectMessages(projectId: string): Promise<void> {
 }
 
 export async function getThreadMessages(threadId: string): Promise<Message[]> {
+  const threadMessages = await getRawMessagesForThread(threadId);
+  if (threadMessages) {
+    return threadMessages
+      .slice()
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
   const allMessages = await getAllMessages();
   return allMessages
     .filter(message => message.threadId === threadId)
@@ -842,17 +977,14 @@ function formatExportRole(role: Message['role']): string {
 export async function exportConversation(projectId: string, threadId: string): Promise<string> {
   await migrateLegacyMessagesToThreads();
 
-  const [projects, threads, allMessages] = await Promise.all([
+  const [projects, threads, messages] = await Promise.all([
     getProjects(),
     getRawThreads(),
-    getRawMessages(),
+    getMessages(projectId, threadId),
   ]);
 
   const project = projects.find(item => item.id === projectId);
   const thread = threads.find(item => item.id === threadId);
-  const messages = allMessages
-    .filter(message => message.threadId === threadId)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   const lines = [
     `Project: ${project?.name || 'Unknown'}`,
