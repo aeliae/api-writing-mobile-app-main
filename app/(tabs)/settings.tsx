@@ -10,16 +10,18 @@ import {
   Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import { Directory, File } from 'expo-file-system';
+import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Card, CardHeader, LoadingIndicator, Modal } from '@/components';
 import { AVAILABLE_MODELS } from '@/types';
-import { getStorageDiagnostics } from '@/services/storage';
+import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBackup, type AppBackupSummary } from '@/services/storage';
 
 export default function SettingsScreen() {
   const { colors, mode, setThemeMode } = useTheme();
-  const { settings, loadingSettings, loadSettings, updateSettings } = useApp();
+  const { settings, loadingSettings, loadSettings, updateSettings, loadProjects, selectProject } = useApp();
 
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -29,6 +31,9 @@ export default function SettingsScreen() {
   const [runningDiagnostic, setRunningDiagnostic] = useState(false);
   const [diagnosticSummary, setDiagnosticSummary] = useState('');
   const [diagnosticExportText, setDiagnosticExportText] = useState('');
+  const [exportingBackup, setExportingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState(false);
+  const [backupStatus, setBackupStatus] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -64,6 +69,152 @@ export default function SettingsScreen() {
 
   const handleThemeChange = (newMode: 'light' | 'dark' | 'system') => {
     setThemeMode(newMode);
+  };
+
+  const formatBackupSummary = (summary: AppBackupSummary) => {
+    const parts = [
+      `${summary.projectCount} project${summary.projectCount === 1 ? '' : 's'}`,
+      `${summary.threadCount} chat${summary.threadCount === 1 ? '' : 's'}`,
+      `${summary.messageCount} message${summary.messageCount === 1 ? '' : 's'}`,
+    ];
+
+    if (summary.memoryCount > 0) {
+      parts.push(`${summary.memoryCount} memory note${summary.memoryCount === 1 ? '' : 's'}`);
+    }
+
+    if (summary.fileCount > 0) {
+      parts.push(`${summary.fileCount} file${summary.fileCount === 1 ? '' : 's'}`);
+    }
+
+    return parts.join(', ');
+  };
+
+  const buildBackupDetails = (summary: AppBackupSummary) => [
+    `Projects: ${summary.projectCount}`,
+    `Chats: ${summary.threadCount}`,
+    `Messages: ${summary.messageCount}`,
+    `Memory notes: ${summary.memoryCount}`,
+    `Files: ${summary.fileCount}`,
+    `File chunks: ${summary.fileChunkCount}`,
+    `Usage entries: ${summary.apiUsageCount}`,
+    `Includes saved API key: ${summary.includesApiKey ? 'Yes' : 'No'}`,
+    `Created: ${new Date(summary.generatedAt).toLocaleString()}`,
+  ].join('\n');
+
+  const isLikelyUserCancellation = (error: unknown) => {
+    if (!(error instanceof Error)) return false;
+    const message = error.message.toLowerCase();
+    return message.includes('cancel') || message.includes('dismiss');
+  };
+
+  const downloadBackupOnWeb = (fileName: string, text: string) => {
+    if (typeof document === 'undefined') {
+      throw new Error('File download is not available in this environment.');
+    }
+
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportBackup = async () => {
+    setExportingBackup(true);
+    try {
+      const backup = await createAppBackup();
+
+      if (Platform.OS === 'web') {
+        downloadBackupOnWeb(backup.fileName, backup.json);
+      } else {
+        try {
+          const directory = await Directory.pickDirectoryAsync();
+          const file = directory.createFile(backup.fileName, 'application/json');
+          file.write(backup.json);
+        } catch (error) {
+          if (isLikelyUserCancellation(error)) {
+            return;
+          }
+          throw error;
+        }
+      }
+
+      const summaryText = formatBackupSummary(backup.summary);
+      setBackupStatus(`Last backup exported: ${summaryText}`);
+      Alert.alert(
+        'Backup Saved',
+        `Saved a full app backup.\n\n${buildBackupDetails(backup.summary)}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Backup Failed', `Could not export your backup.\n\n${message}`);
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const applyBackupRestore = async (json: string) => {
+    setRestoringBackup(true);
+    try {
+      const { summary } = await restoreAppBackup(json);
+      await selectProject(null);
+      await Promise.all([loadProjects(), loadSettings()]);
+      setBackupStatus(`Last restore completed: ${formatBackupSummary(summary)}`);
+      Alert.alert(
+        'Restore Complete',
+        `Local app data was replaced with this backup.\n\n${buildBackupDetails(summary)}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Restore Failed', `Could not restore this backup.\n\n${message}`);
+    } finally {
+      setRestoringBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/json', 'text/plain', '*/*'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets?.[0];
+      if (!asset) {
+        return;
+      }
+
+      const file = new File(asset.uri);
+      const json = await file.text();
+      const { summary } = inspectAppBackup(json);
+
+      Alert.alert(
+        'Restore Backup',
+        `This will replace all local app data on this device.\n\nBackup contents:\n${buildBackupDetails(summary)}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restore',
+            style: 'destructive',
+            onPress: () => {
+              void applyBackupRestore(json);
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Backup Read Failed', `Could not open this backup file.\n\n${message}`);
+    }
   };
 
   const handleRunDiagnostic = async () => {
@@ -316,6 +467,44 @@ export default function SettingsScreen() {
 
       <Card style={styles.card}>
         <CardHeader
+          title="Backup & Restore"
+          subtitle="Export a full local snapshot or replace this device with an existing backup"
+        />
+        <View style={styles.sectionContent}>
+          <Text style={[styles.diagnosticDescription, { color: colors.textSecondary }]}>
+            Backups include projects, chats, messages, memory notes, imported files, processed file chunks,
+            app settings, and token usage history.
+          </Text>
+          <Button
+            title={exportingBackup ? 'Exporting Backup...' : 'Export Backup'}
+            onPress={handleExportBackup}
+            loading={exportingBackup}
+            disabled={exportingBackup || restoringBackup}
+            icon={<Download size={18} color="#FFFFFF" />}
+            style={styles.saveButton}
+          />
+          <Button
+            title={restoringBackup ? 'Restoring Backup...' : 'Restore Backup'}
+            onPress={handleRestoreBackup}
+            loading={restoringBackup}
+            disabled={exportingBackup || restoringBackup}
+            variant="secondary"
+            icon={<Upload size={18} color={colors.text} />}
+            style={styles.secondaryButton}
+          />
+          <Text style={[styles.backupWarning, { color: colors.warning }]}>
+            Restoring replaces all current local app data on this device.
+          </Text>
+          {backupStatus ? (
+            <Text style={[styles.backupStatus, { color: colors.textSecondary }]}>
+              {backupStatus}
+            </Text>
+          ) : null}
+        </View>
+      </Card>
+
+      <Card style={styles.card}>
+        <CardHeader
           title="Storage Diagnostic"
           subtitle="Inspect on-device chat storage and export a report"
         />
@@ -410,6 +599,16 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     marginTop: 10,
+  },
+  backupWarning: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 12,
+  },
+  backupStatus: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8,
   },
   saveButton: {
     marginTop: 12,
