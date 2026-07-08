@@ -297,7 +297,7 @@ export async function sendMessage(
       body: JSON.stringify({
         model: settings.selectedModel,
         messages,
-        max_tokens: 20000,
+        max_tokens: 40000,
         stream: useStreaming,
       }),
     });
