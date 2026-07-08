@@ -68,6 +68,40 @@ export interface StorageDiagnosticsReport {
   likelyIssues: string[];
 }
 
+const APP_BACKUP_VERSION = 1;
+const API_USAGE_KEY = 'cw_api_usage';
+const APP_STORAGE_KEY_PREFIX = 'cw_';
+
+export interface AppBackupMeta {
+  version: number;
+  app: string;
+  exportedAt: string;
+}
+
+export interface AppBackupSnapshot {
+  meta: AppBackupMeta;
+  projects: Project[];
+  threads: ChatThread[];
+  messages: Message[];
+  memories: MemoryEntry[];
+  files: ProjectFile[];
+  fileChunks: ProjectFileChunk[];
+  settings: Settings;
+  apiUsage: ApiUsage[];
+}
+
+export interface AppBackupSummary {
+  generatedAt: string;
+  projectCount: number;
+  threadCount: number;
+  messageCount: number;
+  memoryCount: number;
+  fileCount: number;
+  fileChunkCount: number;
+  apiUsageCount: number;
+  includesApiKey: boolean;
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -148,6 +182,27 @@ function readText(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function readBoolean(...values: unknown[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+
+    if (typeof value === 'number') {
+      if (value === 1) return true;
+      if (value === 0) return false;
+    }
+  }
+
+  return undefined;
+}
+
 function readNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -165,6 +220,15 @@ function readNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map(item => item.trim())
+    .filter(item => item.length > 0);
+}
+
 function readDate(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value !== 'string') continue;
@@ -176,6 +240,19 @@ function readDate(...values: unknown[]): string | undefined {
   }
 
   return undefined;
+}
+
+function dedupeById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    deduped.push(item);
+  }
+
+  return deduped;
 }
 
 function normalizeStoredProject(raw: unknown): Project | null {
@@ -263,6 +340,159 @@ function normalizeStoredMessage(raw: unknown, threadProjectMap: Map<string, stri
     content,
     createdAt,
     ...(tokens !== undefined ? { tokens } : {}),
+  };
+}
+
+function normalizeStoredMemory(raw: unknown): MemoryEntry | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.memoryId, raw.memory_id);
+  const projectId = readString(raw.projectId, raw.project_id, raw.projectID);
+  const title = readString(raw.title, raw.name);
+  const content = readText(raw.content, raw.text, raw.body, raw.note);
+
+  if (!id || !projectId || !title || content === undefined) {
+    return null;
+  }
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp) || new Date().toISOString();
+  const updatedAt = readDate(raw.updatedAt, raw.updated_at, raw.lastUpdated, raw.timestamp, raw.createdAt) || createdAt;
+
+  return {
+    id,
+    projectId,
+    title,
+    content,
+    enabled: readBoolean(raw.enabled, raw.isEnabled, raw.active) ?? true,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeStoredIncludeMode(value: unknown): ProjectFile['includeMode'] {
+  if (typeof value !== 'string') return undefined;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'summary_only' || normalized === 'full') {
+    return normalized;
+  }
+
+  if (normalized === 'summary') return 'summary_only';
+  return undefined;
+}
+
+function normalizeStoredProcessingStatus(value: unknown): ProjectFile['processingStatus'] {
+  if (typeof value !== 'string') return undefined;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'ready' || normalized === 'processing' || normalized === 'error') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function normalizeStoredProjectFile(raw: unknown): ProjectFile | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.fileId, raw.file_id);
+  const projectId = readString(raw.projectId, raw.project_id, raw.projectID);
+  const name = readString(raw.name, raw.filename, raw.fileName, raw.title);
+  const content = readText(raw.content, raw.text, raw.body);
+
+  if (!id || !projectId || !name || content === undefined) {
+    return null;
+  }
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp) || new Date().toISOString();
+  const updatedAt = readDate(raw.updatedAt, raw.updated_at, raw.lastUpdated, raw.timestamp, raw.createdAt) || createdAt;
+
+  return {
+    id,
+    projectId,
+    name,
+    mimeType: readString(raw.mimeType, raw.mime_type, raw.type) || 'text/plain',
+    size: Math.max(0, readNumber(raw.size, raw.fileSize, raw.file_size, content.length) || 0),
+    content,
+    enabled: readBoolean(raw.enabled, raw.isEnabled, raw.active) ?? true,
+    summary: readText(raw.summary, raw.description),
+    keywords: readStringArray(raw.keywords),
+    chunkCount: readNumber(raw.chunkCount, raw.chunk_count),
+    processingStatus: normalizeStoredProcessingStatus(raw.processingStatus),
+    errorMessage: readText(raw.errorMessage, raw.error_message),
+    includeMode: normalizeStoredIncludeMode(raw.includeMode),
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeStoredProjectFileChunk(raw: unknown): ProjectFileChunk | null {
+  if (!isRecord(raw)) return null;
+
+  const id = readString(raw.id, raw.chunkId, raw.chunk_id);
+  const projectId = readString(raw.projectId, raw.project_id, raw.projectID);
+  const fileId = readString(raw.fileId, raw.file_id);
+  const index = readNumber(raw.index, raw.position, raw.order);
+  const content = readText(raw.content, raw.text, raw.body);
+
+  if (!id || !projectId || !fileId || index === undefined || content === undefined) {
+    return null;
+  }
+
+  const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp) || new Date().toISOString();
+  const updatedAt = readDate(raw.updatedAt, raw.updated_at, raw.lastUpdated, raw.timestamp, raw.createdAt) || createdAt;
+
+  return {
+    id,
+    projectId,
+    fileId,
+    index: Math.max(0, Math.floor(index)),
+    title: readText(raw.title, raw.name),
+    content,
+    summary: readText(raw.summary, raw.description),
+    keywords: readStringArray(raw.keywords),
+    enabled: readBoolean(raw.enabled, raw.isEnabled, raw.active) ?? true,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeStoredSettings(raw: unknown): Settings {
+  const defaults: Settings = {
+    openRouterApiKey: '',
+    selectedModel: 'openai/gpt-4o-mini',
+    theme: 'system',
+  };
+
+  if (!isRecord(raw)) {
+    return defaults;
+  }
+
+  const theme = readString(raw.theme, raw.themeMode)?.toLowerCase();
+
+  return {
+    openRouterApiKey: readText(raw.openRouterApiKey, raw.apiKey, raw.api_key) || '',
+    selectedModel: readText(raw.selectedModel, raw.model, raw.modelId) || defaults.selectedModel,
+    theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : defaults.theme,
+  };
+}
+
+function normalizeStoredApiUsage(raw: unknown): ApiUsage | null {
+  if (!isRecord(raw)) return null;
+
+  const promptTokens = readNumber(raw.promptTokens, raw.prompt_tokens);
+  const completionTokens = readNumber(raw.completionTokens, raw.completion_tokens);
+  const totalTokens = readNumber(raw.totalTokens, raw.total_tokens, raw.total);
+
+  if (promptTokens === undefined || completionTokens === undefined || totalTokens === undefined) {
+    return null;
+  }
+
+  return {
+    promptTokens: Math.max(0, promptTokens),
+    completionTokens: Math.max(0, completionTokens),
+    totalTokens: Math.max(0, totalTokens),
+    cost: readText(raw.cost),
   };
 }
 
@@ -983,8 +1213,12 @@ export async function saveSettings(settings: Partial<Settings>): Promise<void> {
 // API Usage tracking
 export async function getApiUsage(): Promise<ApiUsage[]> {
   try {
-    const data = await AsyncStorage.getItem('cw_api_usage');
-    return data ? JSON.parse(data) : [];
+    const data = await AsyncStorage.getItem(API_USAGE_KEY);
+    const parsed = data ? JSON.parse(data) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(normalizeStoredApiUsage)
+      .filter((entry): entry is ApiUsage => entry !== null);
   } catch {
     return [];
   }
@@ -997,7 +1231,7 @@ export async function recordApiUsage(usage: ApiUsage): Promise<void> {
   if (history.length > 100) {
     history.splice(0, history.length - 100);
   }
-  await AsyncStorage.setItem('cw_api_usage', JSON.stringify(history));
+  await AsyncStorage.setItem(API_USAGE_KEY, JSON.stringify(history));
 }
 
 // Project File operations
@@ -1120,6 +1354,210 @@ export async function updateFileChunk(id: string, updates: Partial<ProjectFileCh
 export async function deleteFileChunks(fileId: string): Promise<void> {
   const chunks = await getAllFileChunks();
   await saveFileChunks(chunks.filter(c => c.fileId !== fileId));
+}
+
+function buildAppBackupSummary(snapshot: AppBackupSnapshot): AppBackupSummary {
+  return {
+    generatedAt: snapshot.meta.exportedAt,
+    projectCount: snapshot.projects.length,
+    threadCount: snapshot.threads.length,
+    messageCount: snapshot.messages.length,
+    memoryCount: snapshot.memories.length,
+    fileCount: snapshot.files.length,
+    fileChunkCount: snapshot.fileChunks.length,
+    apiUsageCount: snapshot.apiUsage.length,
+    includesApiKey: !!snapshot.settings.openRouterApiKey,
+  };
+}
+
+function buildAppBackupFileName(exportedAt: string): string {
+  const timestamp = exportedAt.replace(/[:.]/g, '-');
+  return `creative-writing-assistant-backup-${timestamp}.json`;
+}
+
+async function clearAppStorage(): Promise<void> {
+  const allKeys = await AsyncStorage.getAllKeys();
+  const appKeys = allKeys.filter(
+    key => key === API_USAGE_KEY || key.startsWith(APP_STORAGE_KEY_PREFIX)
+  );
+
+  if (appKeys.length > 0) {
+    await AsyncStorage.multiRemove(appKeys);
+  }
+}
+
+function normalizeBackupSnapshot(raw: unknown): AppBackupSnapshot {
+  if (!isRecord(raw)) {
+    throw new Error('This backup file is not valid JSON object data.');
+  }
+
+  const rawMeta = isRecord(raw.meta) ? raw.meta : {};
+  const version = readNumber(rawMeta.version, raw.version) ?? APP_BACKUP_VERSION;
+
+  if (version > APP_BACKUP_VERSION) {
+    throw new Error(`This backup was created with a newer format (v${version}) and cannot be restored here yet.`);
+  }
+
+  const projects = dedupeById(
+    (Array.isArray(raw.projects) ? raw.projects : [])
+      .map(normalizeStoredProject)
+      .filter((project): project is Project => project !== null)
+  );
+  const projectIds = new Set(projects.map(project => project.id));
+
+  const threads = dedupeById(
+    (Array.isArray(raw.threads) ? raw.threads : [])
+      .map(normalizeStoredThread)
+      .filter((thread): thread is ChatThread => thread !== null && projectIds.has(thread.projectId))
+  );
+  const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+  const threadIds = new Set(threads.map(thread => thread.id));
+
+  const messages = dedupeMessages(
+    (Array.isArray(raw.messages) ? raw.messages : [])
+      .map(message => normalizeStoredMessage(message, threadProjectMap))
+      .filter((message): message is Message => (
+        message !== null &&
+        message.threadId.length > 0 &&
+        threadIds.has(message.threadId) &&
+        threadProjectMap.get(message.threadId) === message.projectId
+      ))
+  ).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const memories = dedupeById(
+    (Array.isArray(raw.memories) ? raw.memories : [])
+      .map(normalizeStoredMemory)
+      .filter((memory): memory is MemoryEntry => memory !== null && projectIds.has(memory.projectId))
+  );
+
+  const files = dedupeById(
+    (Array.isArray(raw.files) ? raw.files : [])
+      .map(normalizeStoredProjectFile)
+      .filter((file): file is ProjectFile => file !== null && projectIds.has(file.projectId))
+  );
+  const filesById = new Map(files.map(file => [file.id, file]));
+
+  const fileChunks = dedupeById(
+    (Array.isArray(raw.fileChunks) ? raw.fileChunks : [])
+      .map(normalizeStoredProjectFileChunk)
+      .filter((chunk): chunk is ProjectFileChunk => {
+        if (!chunk) return false;
+        const file = filesById.get(chunk.fileId);
+        return !!file && file.projectId === chunk.projectId;
+      })
+  ).sort((a, b) => a.index - b.index);
+
+  const settings = normalizeStoredSettings(raw.settings);
+  const apiUsage = (Array.isArray(raw.apiUsage) ? raw.apiUsage : [])
+    .map(normalizeStoredApiUsage)
+    .filter((entry): entry is ApiUsage => entry !== null);
+
+  const exportedAt = readDate(rawMeta.exportedAt, raw.exportedAt) || new Date().toISOString();
+
+  return {
+    meta: {
+      version,
+      app: readString(rawMeta.app) || 'creative-writing-assistant',
+      exportedAt,
+    },
+    projects,
+    threads,
+    messages,
+    memories,
+    files,
+    fileChunks,
+    settings,
+    apiUsage,
+  };
+}
+
+export async function createAppBackup(): Promise<{
+  fileName: string;
+  json: string;
+  snapshot: AppBackupSnapshot;
+  summary: AppBackupSummary;
+}> {
+  await migrateLegacyMessagesToThreads();
+
+  const [projects, threads, messages, memories, files, fileChunks, settings, apiUsage] = await Promise.all([
+    getProjects(),
+    getRawThreads(),
+    getRawMessages(),
+    getAllMemories(),
+    getAllFiles(),
+    getAllFileChunks(),
+    getSettings(),
+    getApiUsage(),
+  ]);
+
+  const snapshot: AppBackupSnapshot = {
+    meta: {
+      version: APP_BACKUP_VERSION,
+      app: 'creative-writing-assistant',
+      exportedAt: new Date().toISOString(),
+    },
+    projects,
+    threads,
+    messages,
+    memories,
+    files,
+    fileChunks,
+    settings,
+    apiUsage,
+  };
+
+  return {
+    fileName: buildAppBackupFileName(snapshot.meta.exportedAt),
+    json: JSON.stringify(snapshot, null, 2),
+    summary: buildAppBackupSummary(snapshot),
+    snapshot,
+  };
+}
+
+export function inspectAppBackup(json: string): {
+  snapshot: AppBackupSnapshot;
+  summary: AppBackupSummary;
+} {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('This backup file could not be parsed as JSON.');
+  }
+
+  const snapshot = normalizeBackupSnapshot(parsed);
+  return {
+    summary: buildAppBackupSummary(snapshot),
+    snapshot,
+  };
+}
+
+export async function restoreAppBackup(json: string): Promise<{
+  snapshot: AppBackupSnapshot;
+  summary: AppBackupSummary;
+}> {
+  const { snapshot, summary } = inspectAppBackup(json);
+
+  await clearAppStorage();
+
+  await saveProjects(snapshot.projects);
+  await saveThreads(snapshot.threads);
+  if (snapshot.messages.length > 0) {
+    await saveMessages(snapshot.messages);
+  } else {
+    await saveStoredMessageThreadIds([]);
+  }
+  await saveMemories(snapshot.memories);
+  await saveFiles(snapshot.files);
+  await saveFileChunks(snapshot.fileChunks);
+  await AsyncStorage.setItem(KEYS.SETTINGS, JSON.stringify(snapshot.settings));
+  await AsyncStorage.setItem(API_USAGE_KEY, JSON.stringify(snapshot.apiUsage));
+
+  return {
+    snapshot,
+    summary,
+  };
 }
 
 function formatExportRole(role: Message['role']): string {
