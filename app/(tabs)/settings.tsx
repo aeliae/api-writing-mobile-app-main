@@ -32,6 +32,7 @@ export default function SettingsScreen() {
   const [diagnosticSummary, setDiagnosticSummary] = useState('');
   const [diagnosticExportText, setDiagnosticExportText] = useState('');
   const [exportingBackup, setExportingBackup] = useState(false);
+  const [sharingBackup, setSharingBackup] = useState(false);
   const [restoringBackup, setRestoringBackup] = useState(false);
   const [backupStatus, setBackupStatus] = useState('');
 
@@ -135,6 +136,14 @@ export default function SettingsScreen() {
           const directory = await Directory.pickDirectoryAsync();
           const file = directory.createFile(backup.fileName, 'application/json');
           file.write(backup.json);
+
+          const summaryText = formatBackupSummary(backup.summary);
+          setBackupStatus(`Last backup saved: ${summaryText}`);
+          Alert.alert(
+            'Backup Saved',
+            `Saved "${backup.fileName}" in the folder you chose.\n\n${buildBackupDetails(backup.summary)}`
+          );
+          return;
         } catch (error) {
           if (isLikelyUserCancellation(error)) {
             return;
@@ -144,7 +153,7 @@ export default function SettingsScreen() {
       }
 
       const summaryText = formatBackupSummary(backup.summary);
-      setBackupStatus(`Last backup exported: ${summaryText}`);
+      setBackupStatus(`Last backup saved: ${summaryText}`);
       Alert.alert(
         'Backup Saved',
         `Saved a full app backup.\n\n${buildBackupDetails(backup.summary)}`
@@ -154,6 +163,30 @@ export default function SettingsScreen() {
       Alert.alert('Backup Failed', `Could not export your backup.\n\n${message}`);
     } finally {
       setExportingBackup(false);
+    }
+  };
+
+  const handleShareBackup = async () => {
+    setSharingBackup(true);
+    try {
+      const backup = await createAppBackup();
+
+      if (Platform.OS === 'web') {
+        downloadBackupOnWeb(backup.fileName, backup.json);
+      } else {
+        await Share.share({
+          message: backup.json,
+          title: backup.fileName,
+        });
+      }
+
+      const summaryText = formatBackupSummary(backup.summary);
+      setBackupStatus(`Last backup prepared: ${summaryText}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Share Failed', `Could not prepare a shareable backup.\n\n${message}`);
+    } finally {
+      setSharingBackup(false);
     }
   };
 
@@ -475,19 +508,32 @@ export default function SettingsScreen() {
             Backups include projects, chats, messages, memory notes, imported files, processed file chunks,
             app settings, and token usage history.
           </Text>
+          <Text style={[styles.backupHelper, { color: colors.textSecondary }]}>
+            On Android and BlueStacks, saving a backup opens the system folder picker. Choose a folder, then confirm it there.
+            If that picker feels awkward, use the share option instead.
+          </Text>
           <Button
-            title={exportingBackup ? 'Exporting Backup...' : 'Export Backup'}
+            title={exportingBackup ? 'Saving Backup...' : 'Save Backup File'}
             onPress={handleExportBackup}
             loading={exportingBackup}
-            disabled={exportingBackup || restoringBackup}
+            disabled={exportingBackup || sharingBackup || restoringBackup}
             icon={<Download size={18} color="#FFFFFF" />}
             style={styles.saveButton}
+          />
+          <Button
+            title={sharingBackup ? 'Preparing Share...' : 'Share Backup'}
+            onPress={handleShareBackup}
+            loading={sharingBackup}
+            disabled={exportingBackup || sharingBackup || restoringBackup}
+            variant="secondary"
+            icon={<Upload size={18} color={colors.text} />}
+            style={styles.secondaryButton}
           />
           <Button
             title={restoringBackup ? 'Restoring Backup...' : 'Restore Backup'}
             onPress={handleRestoreBackup}
             loading={restoringBackup}
-            disabled={exportingBackup || restoringBackup}
+            disabled={exportingBackup || sharingBackup || restoringBackup}
             variant="secondary"
             icon={<Upload size={18} color={colors.text} />}
             style={styles.secondaryButton}
@@ -604,6 +650,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginTop: 12,
+  },
+  backupHelper: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 10,
   },
   backupStatus: {
     fontSize: 12,
