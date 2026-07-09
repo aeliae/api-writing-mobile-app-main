@@ -11,13 +11,13 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
-import { Directory, File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Card, CardHeader, LoadingIndicator, Modal } from '@/components';
 import { AVAILABLE_MODELS } from '@/types';
-import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBackup, type AppBackupSummary } from '@/services/storage';
+import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBackup, type AppBackupSnapshot, type AppBackupSummary } from '@/services/storage';
 
 export default function SettingsScreen() {
   const { colors, mode, setThemeMode } = useTheme();
@@ -102,12 +102,6 @@ export default function SettingsScreen() {
     `Created: ${new Date(summary.generatedAt).toLocaleString()}`,
   ].join('\n');
 
-  const isLikelyUserCancellation = (error: unknown) => {
-    if (!(error instanceof Error)) return false;
-    const message = error.message.toLowerCase();
-    return message.includes('cancel') || message.includes('dismiss');
-  };
-
   const downloadBackupOnWeb = (fileName: string, text: string) => {
     if (typeof document === 'undefined') {
       throw new Error('File download is not available in this environment.');
@@ -124,6 +118,17 @@ export default function SettingsScreen() {
     URL.revokeObjectURL(url);
   };
 
+  const saveBackupFileLocally = (backup: { fileName: string; json: string; snapshot: AppBackupSnapshot }) => {
+    const backupsDirectory = new Directory(Paths.document, 'backups');
+    backupsDirectory.create({ idempotent: true, intermediates: true });
+
+    const file = new File(backupsDirectory, backup.fileName);
+    file.create({ overwrite: true, intermediates: true });
+    file.write(backup.json);
+
+    return file;
+  };
+
   const handleExportBackup = async () => {
     setExportingBackup(true);
     try {
@@ -132,24 +137,14 @@ export default function SettingsScreen() {
       if (Platform.OS === 'web') {
         downloadBackupOnWeb(backup.fileName, backup.json);
       } else {
-        try {
-          const directory = await Directory.pickDirectoryAsync();
-          const file = directory.createFile(backup.fileName, 'application/json');
-          file.write(backup.json);
-
-          const summaryText = formatBackupSummary(backup.summary);
-          setBackupStatus(`Last backup saved: ${summaryText}`);
-          Alert.alert(
-            'Backup Saved',
-            `Saved "${backup.fileName}" in the folder you chose.\n\n${buildBackupDetails(backup.summary)}`
-          );
-          return;
-        } catch (error) {
-          if (isLikelyUserCancellation(error)) {
-            return;
-          }
-          throw error;
-        }
+        const file = saveBackupFileLocally(backup);
+        const summaryText = formatBackupSummary(backup.summary);
+        setBackupStatus(`Last backup saved: ${summaryText}`);
+        Alert.alert(
+          'Backup Saved',
+          `Saved "${backup.fileName}" inside the app backup folder.\n\nLocation:\n${file.uri}\n\n${buildBackupDetails(backup.summary)}`
+        );
+        return;
       }
 
       const summaryText = formatBackupSummary(backup.summary);
@@ -174,10 +169,31 @@ export default function SettingsScreen() {
       if (Platform.OS === 'web') {
         downloadBackupOnWeb(backup.fileName, backup.json);
       } else {
-        await Share.share({
-          message: backup.json,
-          title: backup.fileName,
-        });
+        const file = saveBackupFileLocally(backup);
+
+        // Release the loading state before opening the native share sheet so emulator quirks
+        // do not leave the settings screen looking blocked if the sheet is slow or unreliable.
+        setSharingBackup(false);
+
+        try {
+          await Share.share({
+            title: backup.fileName,
+            url: file.uri,
+            message: `Creative Writing Assistant backup file:\n${file.uri}`,
+          }, {
+            dialogTitle: 'Share backup file',
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          Alert.alert(
+            'Share Failed',
+            `The backup file was still saved locally, but the share sheet could not open.\n\nLocation:\n${file.uri}\n\n${message}`
+          );
+        }
+
+        const summaryText = formatBackupSummary(backup.summary);
+        setBackupStatus(`Last backup prepared: ${summaryText}`);
+        return;
       }
 
       const summaryText = formatBackupSummary(backup.summary);
@@ -509,8 +525,8 @@ export default function SettingsScreen() {
             app settings, and token usage history.
           </Text>
           <Text style={[styles.backupHelper, { color: colors.textSecondary }]}>
-            On Android and BlueStacks, saving a backup opens the system folder picker. Choose a folder, then confirm it there.
-            If that picker feels awkward, use the share option instead.
+            On Android and BlueStacks, backups are now saved directly into the app&apos;s own backup folder first.
+            Use &quot;Share Backup&quot; only if you want to send that file somewhere else.
           </Text>
           <Button
             title={exportingBackup ? 'Saving Backup...' : 'Save Backup File'}
