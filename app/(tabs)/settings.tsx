@@ -12,7 +12,7 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
-import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload } from 'lucide-react-native';
+import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload, History } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Card, CardHeader, LoadingIndicator, Modal } from '@/components';
@@ -33,6 +33,7 @@ export default function SettingsScreen() {
   const [diagnosticExportText, setDiagnosticExportText] = useState('');
   const [exportingBackup, setExportingBackup] = useState(false);
   const [sharingBackup, setSharingBackup] = useState(false);
+  const [locatingLatestBackup, setLocatingLatestBackup] = useState(false);
   const [restoringBackup, setRestoringBackup] = useState(false);
   const [backupStatus, setBackupStatus] = useState('');
 
@@ -127,6 +128,38 @@ export default function SettingsScreen() {
     file.write(backup.json);
 
     return file;
+  };
+
+  const getLatestLocalBackupFile = () => {
+    const backupsDirectory = new Directory(Paths.document, 'backups');
+    const directoryInfo = backupsDirectory.info();
+
+    if (!directoryInfo.exists) {
+      return null;
+    }
+
+    const backupFiles = backupsDirectory
+      .list()
+      .filter((entry): entry is File => entry instanceof File && entry.name.toLowerCase().endsWith('.json'));
+
+    if (backupFiles.length === 0) {
+      return null;
+    }
+
+    backupFiles.sort((a, b) => {
+      const aInfo = a.info();
+      const bInfo = b.info();
+      const aTimestamp = aInfo.modificationTime ?? aInfo.creationTime ?? 0;
+      const bTimestamp = bInfo.modificationTime ?? bInfo.creationTime ?? 0;
+
+      if (aTimestamp !== bTimestamp) {
+        return bTimestamp - aTimestamp;
+      }
+
+      return b.name.localeCompare(a.name);
+    });
+
+    return backupFiles[0];
   };
 
   const handleExportBackup = async () => {
@@ -225,6 +258,25 @@ export default function SettingsScreen() {
     }
   };
 
+  const promptRestoreBackup = (json: string, sourceLabel: string) => {
+    const { summary } = inspectAppBackup(json);
+
+    Alert.alert(
+      'Restore Backup',
+      `This will replace all local app data on this device.\n\nSource: ${sourceLabel}\n\nBackup contents:\n${buildBackupDetails(summary)}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restore',
+          style: 'destructive',
+          onPress: () => {
+            void applyBackupRestore(json);
+          },
+        },
+      ]
+    );
+  };
+
   const handleRestoreBackup = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -244,25 +296,33 @@ export default function SettingsScreen() {
 
       const file = new File(asset.uri);
       const json = await file.text();
-      const { summary } = inspectAppBackup(json);
-
-      Alert.alert(
-        'Restore Backup',
-        `This will replace all local app data on this device.\n\nBackup contents:\n${buildBackupDetails(summary)}`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Restore',
-            style: 'destructive',
-            onPress: () => {
-              void applyBackupRestore(json);
-            },
-          },
-        ]
-      );
+      promptRestoreBackup(json, asset.name || file.name || 'Picked backup file');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       Alert.alert('Backup Read Failed', `Could not open this backup file.\n\n${message}`);
+    }
+  };
+
+  const handleRestoreLatestBackup = async () => {
+    setLocatingLatestBackup(true);
+    try {
+      const latestBackup = getLatestLocalBackupFile();
+
+      if (!latestBackup) {
+        Alert.alert(
+          'No Local Backups Found',
+          'There is no saved backup file in the app backup folder yet. Save a backup first, or use "Restore Backup" to pick one manually.'
+        );
+        return;
+      }
+
+      const json = await latestBackup.text();
+      promptRestoreBackup(json, `Latest local backup: ${latestBackup.name}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      Alert.alert('Latest Backup Failed', `Could not open the latest local backup.\n\n${message}`);
+    } finally {
+      setLocatingLatestBackup(false);
     }
   };
 
@@ -540,16 +600,25 @@ export default function SettingsScreen() {
             title={sharingBackup ? 'Preparing Share...' : 'Share Backup'}
             onPress={handleShareBackup}
             loading={sharingBackup}
-            disabled={exportingBackup || sharingBackup || restoringBackup}
+            disabled={exportingBackup || sharingBackup || locatingLatestBackup || restoringBackup}
             variant="secondary"
             icon={<Upload size={18} color={colors.text} />}
+            style={styles.secondaryButton}
+          />
+          <Button
+            title={locatingLatestBackup ? 'Checking Latest Backup...' : 'Restore Latest Local Backup'}
+            onPress={handleRestoreLatestBackup}
+            loading={locatingLatestBackup}
+            disabled={exportingBackup || sharingBackup || locatingLatestBackup || restoringBackup}
+            variant="secondary"
+            icon={<History size={18} color={colors.text} />}
             style={styles.secondaryButton}
           />
           <Button
             title={restoringBackup ? 'Restoring Backup...' : 'Restore Backup'}
             onPress={handleRestoreBackup}
             loading={restoringBackup}
-            disabled={exportingBackup || sharingBackup || restoringBackup}
+            disabled={exportingBackup || sharingBackup || locatingLatestBackup || restoringBackup}
             variant="secondary"
             icon={<Upload size={18} color={colors.text} />}
             style={styles.secondaryButton}
