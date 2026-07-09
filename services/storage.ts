@@ -14,6 +14,7 @@ const KEYS = {
 };
 
 const DEFAULT_THREAD_TITLE = 'Main Chat';
+const AUTO_TITLE_MAX_LENGTH = 48;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -511,6 +512,73 @@ function getDefaultBranchTitle(sourceThread: ChatThread, threads: ChatThread[]):
   const baseTitle = sourceThread.title.trim() || DEFAULT_THREAD_TITLE;
   const siblingCount = threads.filter(thread => thread.parentThreadId === sourceThread.id).length;
   return `${baseTitle} Branch ${siblingCount + 1}`;
+}
+
+function isAutoTitlePlaceholder(title?: string): boolean {
+  const normalized = title?.trim() || '';
+  if (!normalized) return true;
+
+  return normalized === DEFAULT_THREAD_TITLE || /^Chat\s+\d+$/i.test(normalized);
+}
+
+function truncateThreadTitle(value: string, maxLength = AUTO_TITLE_MAX_LENGTH): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const truncated = value.slice(0, maxLength + 1);
+  const lastSpace = truncated.lastIndexOf(' ');
+  if (lastSpace >= Math.floor(maxLength * 0.6)) {
+    return truncated.slice(0, lastSpace).trim();
+  }
+
+  return value.slice(0, maxLength).trim();
+}
+
+function generateAutoThreadTitle(messageContent: string): string {
+  const cleaned = messageContent
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line.length > 0)
+    ?.replace(/^[-*#>\s]+/, '')
+    .replace(/^(please\s+)?(can|could|would|will)\s+you\s+/i, '')
+    .replace(/^help\s+me\s+/i, '')
+    .replace(/^i\s+(want|need|am trying)\s+to\s+/i, '')
+    .replace(/^let'?s\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim() || '';
+
+  const sentenceMatch = cleaned.match(/^(.{1,80}?[.!?])(?:\s|$)/);
+  const candidate = (sentenceMatch?.[1] || cleaned)
+    .replace(/[.!?]+$/, '')
+    .trim();
+
+  if (!candidate) {
+    return '';
+  }
+
+  const titled = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+  return truncateThreadTitle(titled);
+}
+
+async function maybeAutoTitleThread(threadId: string, role: Message['role'], content: string, existingCount: number): Promise<void> {
+  if (role !== 'user' || existingCount > 0) return;
+
+  const nextTitle = generateAutoThreadTitle(content);
+  if (!nextTitle) return;
+
+  const threads = await getRawThreads();
+  const index = threads.findIndex(thread => thread.id === threadId);
+  if (index === -1) return;
+  if (!isAutoTitlePlaceholder(threads[index].title)) return;
+
+  threads[index] = {
+    ...threads[index],
+    title: nextTitle,
+  };
+
+  await saveThreads(threads);
 }
 
 function getThreadMessagesStorageKey(threadId: string): string {
@@ -1056,6 +1124,7 @@ export async function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Pr
   };
   const threadMessages = await getThreadMessages(message.threadId);
   await saveMessagesForThread(message.threadId, [...threadMessages, newMessage]);
+  await maybeAutoTitleThread(message.threadId, message.role, message.content, threadMessages.length);
   await updateThread(message.threadId, {});
   await touchProject(message.projectId, newMessage.createdAt);
   return newMessage;
