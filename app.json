@@ -20,6 +20,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withAsyncStorageDbSize",
       "expo-router",
       "expo-font",
       "expo-web-browser"
