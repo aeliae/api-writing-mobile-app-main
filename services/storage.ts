@@ -63,6 +63,7 @@ export interface StorageDiagnosticsReport {
   mismatches: {
     threadsWithoutMessages: string[];
     shardThreadIdsWithoutThreadRecord: string[];
+    unindexedShardThreadIds: string[];
     indexedThreadIdsWithoutShard: string[];
     legacyThreadIdsWithoutThreadRecord: string[];
   };
@@ -603,20 +604,30 @@ async function saveStoredMessageThreadIds(threadIds: string[]): Promise<void> {
 
 async function getKnownMessageThreadIds(): Promise<string[]> {
   const indexedThreadIds = await getStoredMessageThreadIds();
-  if (indexedThreadIds.length > 0) {
-    return indexedThreadIds;
-  }
-
+  let shardThreadIds: string[] = [];
   try {
     const allKeys = await AsyncStorage.getAllKeys();
-    return allKeys
+    shardThreadIds = allKeys
       .filter(key => key.startsWith('cw_messages_thread_'))
       .map(key => key.slice('cw_messages_thread_'.length))
       .filter(threadId => threadId.trim().length > 0);
   } catch (error) {
     console.error('Error scanning message shard keys:', error);
-    return [];
   }
+
+  // The index is an optimization, not the source of truth. Include physical
+  // shard keys as well so a partially-written index cannot hide a chat.
+  const knownThreadIds = Array.from(new Set([...indexedThreadIds, ...shardThreadIds]));
+
+  if (knownThreadIds.length !== indexedThreadIds.length || knownThreadIds.some(id => !indexedThreadIds.includes(id))) {
+    try {
+      await saveStoredMessageThreadIds(knownThreadIds);
+    } catch (repairError) {
+      console.error('Error repairing message thread index:', repairError);
+    }
+  }
+
+  return knownThreadIds;
 }
 
 async function saveMessagesForThread(threadId: string, messages: Message[]): Promise<void> {
@@ -803,15 +814,39 @@ async function getRawMessages(): Promise<Message[]> {
         .filter((message): message is Message => message !== null);
     } catch (error) {
       console.error('Error loading sharded messages:', error);
+
+      // Some AsyncStorage implementations fail on a large multiGet even
+      // though individual keys remain readable. Retry per shard before using
+      // the legacy blob. Most importantly, do not call saveMessages() from a
+      // failure path: doing so could prune healthy shards that were omitted
+      // from the failed read.
+      try {
+        const threads = await getRawThreads();
+        const threadProjectMap = new Map(threads.map(thread => [thread.id, thread.projectId]));
+        const entries = await Promise.all(
+          threadIds.map(async threadId => {
+            try {
+              return [threadId, await AsyncStorage.getItem(getThreadMessagesStorageKey(threadId))] as const;
+            } catch (shardError) {
+              console.error(`Error loading message shard ${threadId}:`, shardError);
+              return [threadId, null] as const;
+            }
+          })
+        );
+
+        return entries.flatMap(([, data]) => parseStoredCollection(data, ['messages', 'items']))
+          .map(message => normalizeStoredMessage(message, threadProjectMap))
+          .filter((message): message is Message => message !== null);
+      } catch (fallbackError) {
+        console.error('Error loading message shards individually:', fallbackError);
+      }
     }
   }
 
   const legacyMessages = await getRawMessagesFromLegacyStorage();
 
-  if (legacyMessages.length > 0) {
-    await saveMessages(legacyMessages);
-  }
-
+  // Keep the legacy fallback read-only. A partial shard read must never
+  // overwrite the newer per-thread storage with only legacy messages.
   return legacyMessages;
 }
 
@@ -1083,7 +1118,7 @@ export async function saveMessages(messages: Message[]): Promise<void> {
   }
 
   const nextThreadIds = Array.from(groupedMessages.keys());
-  const previousThreadIds = await getStoredMessageThreadIds();
+  const previousThreadIds = await getKnownMessageThreadIds();
   const staleThreadIds = previousThreadIds.filter(threadId => !groupedMessages.has(threadId));
 
   await AsyncStorage.multiSet(
@@ -1722,6 +1757,7 @@ export async function getStorageDiagnostics(): Promise<{
     .filter(thread => thread.messageCount === 0)
     .map(thread => thread.threadId);
   const shardThreadIdsWithoutThreadRecord = shardThreadIds.filter(threadId => !threadProjectMap.has(threadId));
+  const unindexedShardThreadIds = shardThreadIds.filter(threadId => !indexedThreadIds.includes(threadId));
   const indexedThreadIdsWithoutShard = indexedThreadIds.filter(threadId => !shardThreadIds.includes(threadId));
   const legacyThreadIdsWithoutThreadRecord = Array.from(
     new Set(
@@ -1744,8 +1780,14 @@ export async function getStorageDiagnostics(): Promise<{
   if (shardThreadIdsWithoutThreadRecord.length > 0) {
     likelyIssues.push('Some message shard keys exist without matching thread records.');
   }
+  if (unindexedShardThreadIds.length > 0) {
+    likelyIssues.push('Some message shard keys are missing from the shard index. The app may ignore those chats until the index is repaired.');
+  }
   if (indexedThreadIdsWithoutShard.length > 0) {
     likelyIssues.push('The shard index references thread ids that do not currently have shard keys.');
+  }
+  if (legacyThreadIdsWithoutThreadRecord.length > 0) {
+    likelyIssues.push('Legacy messages reference deleted or missing thread records.');
   }
 
   const report: StorageDiagnosticsReport = {
@@ -1783,6 +1825,7 @@ export async function getStorageDiagnostics(): Promise<{
     mismatches: {
       threadsWithoutMessages,
       shardThreadIdsWithoutThreadRecord,
+      unindexedShardThreadIds,
       indexedThreadIdsWithoutShard,
       legacyThreadIdsWithoutThreadRecord,
     },
@@ -1803,6 +1846,7 @@ export async function getStorageDiagnostics(): Promise<{
     `Sharded normalized messages: ${report.shardedMessages.normalizedMessageCount}`,
     `Threads without messages: ${report.mismatches.threadsWithoutMessages.length}`,
     `Shard ids without thread record: ${report.mismatches.shardThreadIdsWithoutThreadRecord.length}`,
+    `Unindexed shard ids: ${report.mismatches.unindexedShardThreadIds.length}`,
     `Index ids without shard: ${report.mismatches.indexedThreadIdsWithoutShard.length}`,
   ];
 
