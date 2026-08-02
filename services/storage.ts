@@ -23,6 +23,8 @@ export interface StorageDiagnosticsReport {
   keyStats: {
     allKeyCount: number;
     relevantKeys: string[];
+    relevantKeySizes: Array<{ key: string; serializedLength: number }>;
+    totalRelevantSerializedLength: number;
   };
   projects: {
     count: number;
@@ -1688,6 +1690,21 @@ export async function getStorageDiagnostics(): Promise<{
       key.startsWith('expo-') ||
       key.includes('message')
   ).sort();
+  const relevantKeySizes = await Promise.all(
+    relevantKeys.map(async key => {
+      try {
+        const value = await AsyncStorage.getItem(key);
+        return { key, serializedLength: value?.length || 0 };
+      } catch (error) {
+        console.error(`Error measuring storage key ${key}:`, error);
+        return { key, serializedLength: -1 };
+      }
+    })
+  );
+  const totalRelevantSerializedLength = relevantKeySizes.reduce(
+    (total, entry) => total + Math.max(0, entry.serializedLength),
+    0
+  );
 
   const [projects, threads, indexedThreadIds, legacyMessagesRaw] = await Promise.all([
     getProjects(),
@@ -1789,12 +1806,17 @@ export async function getStorageDiagnostics(): Promise<{
   if (legacyThreadIdsWithoutThreadRecord.length > 0) {
     likelyIssues.push('Legacy messages reference deleted or missing thread records.');
   }
+  if (totalRelevantSerializedLength > 5_000_000) {
+    likelyIssues.push('Stored app data is close to or above AsyncStorage Android\'s default 6 MB database limit. Large imported files and message history should be moved out of AsyncStorage or the native limit should be increased.');
+  }
 
   const report: StorageDiagnosticsReport = {
     generatedAt,
     keyStats: {
       allKeyCount: allKeys.length,
       relevantKeys,
+      relevantKeySizes,
+      totalRelevantSerializedLength,
     },
     projects: {
       count: projects.length,
@@ -1834,6 +1856,7 @@ export async function getStorageDiagnostics(): Promise<{
 
   const summaryLines = [
     `Generated: ${generatedAt}`,
+    `Relevant serialized storage: ${totalRelevantSerializedLength} chars`,
     `Projects: ${report.projects.count}`,
     `Threads: ${report.threads.count}`,
     `Legacy cw_messages present: ${report.legacyMessages.keyPresent ? 'yes' : 'no'}`,
