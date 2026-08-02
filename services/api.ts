@@ -221,70 +221,74 @@ export async function sendMessage(
   context?: string,
   options?: SendMessageOptions
 ): Promise<ChatResponse> {
-  const settings = await getSettings();
-
-  if (!settings.openRouterApiKey) {
-    throw new ApiError('API key not configured. Please add your OpenRouter API key in Settings.', 'NO_API_KEY');
-  }
-
-  const messages: OpenRouterMessage[] = [];
-
-  const memories = await getProjectMemories(projectId);
-  const memoryContext = buildMemoryContext(memories);
-  const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, conversationHistory);
-
-  let fullSystemPrompt = systemPrompt;
-  if (memoryContext) fullSystemPrompt += memoryContext;
-  if (knowledgeContext) fullSystemPrompt += knowledgeContext;
-  if (context) fullSystemPrompt += '\n\n' + context;
-
-  if (fullSystemPrompt.trim()) {
-    messages.push({ role: 'system', content: fullSystemPrompt.trim() });
-  }
-
-  for (const msg of conversationHistory) {
-    messages.push({ role: msg.role, content: msg.content });
-  }
-  messages.push({ role: 'user', content: userMessage });
-
-  const useStreaming = !!options?.onChunk;
-  const onChunk = options?.onChunk;
-  let assistantContent = '';
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let totalTokens = 0;
-  const processSseLine = (
-    line: string,
-    accumulated: string
-  ): { accumulated: string; done: boolean } => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data: ')) return { accumulated, done: false };
-
-    const payload = trimmed.slice(6);
-    if (payload === '[DONE]') return { accumulated, done: true };
-
-    try {
-      const chunk = JSON.parse(payload);
-      const delta = chunk.choices?.[0]?.delta?.content;
-      if (delta && onChunk) {
-        accumulated += delta;
-        onChunk(accumulated);
-      } else if (delta) {
-        accumulated += delta;
-      }
-      if (chunk.usage) {
-        promptTokens = chunk.usage.prompt_tokens ?? 0;
-        completionTokens = chunk.usage.completion_tokens ?? 0;
-        totalTokens = chunk.usage.total_tokens ?? promptTokens + completionTokens;
-      }
-    } catch {
-      // ignore malformed chunks
-    }
-
-    return { accumulated, done: false };
-  };
+  let requestStarted = false;
+  let responseProcessed = false;
 
   try {
+    const settings = await getSettings();
+
+    if (!settings.openRouterApiKey) {
+      throw new ApiError('API key not configured. Please add your OpenRouter API key in Settings.', 'NO_API_KEY');
+    }
+
+    const messages: OpenRouterMessage[] = [];
+
+    const memories = await getProjectMemories(projectId);
+    const memoryContext = buildMemoryContext(memories);
+    const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, conversationHistory);
+
+    let fullSystemPrompt = systemPrompt;
+    if (memoryContext) fullSystemPrompt += memoryContext;
+    if (knowledgeContext) fullSystemPrompt += knowledgeContext;
+    if (context) fullSystemPrompt += '\n\n' + context;
+
+    if (fullSystemPrompt.trim()) {
+      messages.push({ role: 'system', content: fullSystemPrompt.trim() });
+    }
+
+    for (const msg of conversationHistory) {
+      messages.push({ role: msg.role, content: msg.content });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    const useStreaming = !!options?.onChunk;
+    const onChunk = options?.onChunk;
+    let assistantContent = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let totalTokens = 0;
+    const processSseLine = (
+      line: string,
+      accumulated: string
+    ): { accumulated: string; done: boolean } => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data: ')) return { accumulated, done: false };
+
+      const payload = trimmed.slice(6);
+      if (payload === '[DONE]') return { accumulated, done: true };
+
+      try {
+        const chunk = JSON.parse(payload);
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta && onChunk) {
+          accumulated += delta;
+          onChunk(accumulated);
+        } else if (delta) {
+          accumulated += delta;
+        }
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens ?? 0;
+          completionTokens = chunk.usage.completion_tokens ?? 0;
+          totalTokens = chunk.usage.total_tokens ?? promptTokens + completionTokens;
+        }
+      } catch {
+        // ignore malformed chunks
+      }
+
+      return { accumulated, done: false };
+    };
+
+    requestStarted = true;
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
       headers: {
@@ -297,7 +301,7 @@ export async function sendMessage(
       body: JSON.stringify({
         model: settings.selectedModel,
         messages,
-        max_tokens: 40000,
+        max_tokens: 20000,
         stream: useStreaming,
       }),
     });
@@ -374,6 +378,8 @@ export async function sendMessage(
       totalTokens = data.usage?.total_tokens || promptTokens + completionTokens;
     }
 
+    responseProcessed = true;
+
     const usage: ApiUsage = { promptTokens, completionTokens, totalTokens, cost: undefined };
 
     const model = AVAILABLE_MODELS.find(m => m.id === settings.selectedModel);
@@ -395,7 +401,13 @@ export async function sendMessage(
   } catch (error) {
     if (error instanceof ApiError) throw error;
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    throw new ApiError(`Network error: ${errorMessage}. Please check your connection.`, 'NETWORK_ERROR');
+    if (!requestStarted) {
+      throw new ApiError(`Local data error: ${errorMessage}. Please run Storage Diagnostic in Settings.`, 'LOCAL_DATA_ERROR');
+    }
+    if (!responseProcessed) {
+      throw new ApiError(`Network error: ${errorMessage}. Please check your connection.`, 'NETWORK_ERROR');
+    }
+    throw new ApiError(`Local data error: ${errorMessage}. The response arrived, but it could not be saved.`, 'LOCAL_DATA_ERROR');
   }
 }
 
