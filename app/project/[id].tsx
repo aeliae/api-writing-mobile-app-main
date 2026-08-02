@@ -34,13 +34,14 @@ import {
   RotateCcw,
   ChevronDown,
   MessageSquare,
+  Pencil,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
-import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel } from '@/components';
+import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
 import { formatTokens, formatDate } from '@/utils/helpers';
-import { Message, QUICK_ACTIONS } from '@/types';
+import { ChatThread, Message, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
@@ -214,7 +215,7 @@ export default function ProjectScreen() {
   const { colors } = useTheme();
   const {
     loadProjects, selectProject, currentProject,
-    threads, currentThread, createThread, branchThread, selectThread, deleteThread,
+    threads, currentThread, createThread, branchThread, selectThread, updateThread, deleteThread,
     messages, loadMessages, clearMessages,
     files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
@@ -229,6 +230,10 @@ export default function ProjectScreen() {
   const [lastUsage, setLastUsage] = useState<{ promptTokens: number; completionTokens: number; total: number } | null>(null);
   const [systemPromptModalVisible, setSystemPromptModalVisible] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [threadTitleModalVisible, setThreadTitleModalVisible] = useState(false);
+  const [threadTitleDraft, setThreadTitleDraft] = useState('');
+  const [threadBeingEdited, setThreadBeingEdited] = useState<ChatThread | null>(null);
+  const [isSavingThreadTitle, setIsSavingThreadTitle] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
 
   const inputRef = useRef<TextInput>(null);
@@ -418,13 +423,14 @@ export default function ProjectScreen() {
       setLiveMessages([]);
       await loadProjects();
     } catch (err) {
-      await loadMessages(currentProject.id, currentThread.id);
-      setLiveMessages([]);
-      if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError('An unexpected error occurred. Please try again.');
+      try {
+        await loadMessages(currentProject.id, currentThread.id);
+      } catch (reloadError) {
+        console.error('Could not reload messages after send failure:', reloadError);
       }
+      setLiveMessages([]);
+      const message = getErrorMessage(err).trim();
+      setError(message && message !== '[object Object]' ? message : 'The message could not be sent. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -660,10 +666,54 @@ Consider pacing, tension building, and character development.`;
   const handleCreateThread = async () => {
     if (!currentProject) return;
     const count = safeThreads.length + 1;
-    await createThread(currentProject.id, `Chat ${count}`);
-    setLastUsage(null);
-    setCurrentTab('chat');
+    try {
+      await createThread(currentProject.id, `Chat ${count}`);
+      setLastUsage(null);
+      setError(null);
+      setCurrentTab('chat');
+    } catch (err) {
+      const message = getErrorMessage(err).trim();
+      Alert.alert(
+        'Could Not Create Chat',
+        message && message !== '[object Object]'
+          ? message
+          : 'The chat could not be saved on this device. Please run Storage Diagnostic in Settings.'
+      );
+    }
   };
+
+  const handleOpenRenameThread = useCallback((thread: ChatThread) => {
+    setThreadBeingEdited(thread);
+    setThreadTitleDraft(thread.title || '');
+    setThreadTitleModalVisible(true);
+  }, []);
+
+  const handleCloseRenameThreadModal = useCallback(() => {
+    if (isSavingThreadTitle) return;
+    setThreadTitleModalVisible(false);
+    setThreadBeingEdited(null);
+    setThreadTitleDraft('');
+  }, [isSavingThreadTitle]);
+
+  const handleSaveThreadTitle = useCallback(async () => {
+    if (!threadBeingEdited) return;
+
+    const nextTitle = threadTitleDraft.trim();
+    if (!nextTitle) {
+      Alert.alert('Name Required', 'Please enter a name for this chat.');
+      return;
+    }
+
+    setIsSavingThreadTitle(true);
+    try {
+      await updateThread(threadBeingEdited.id, { title: nextTitle });
+      setThreadTitleModalVisible(false);
+      setThreadBeingEdited(null);
+      setThreadTitleDraft('');
+    } finally {
+      setIsSavingThreadTitle(false);
+    }
+  }, [threadBeingEdited, threadTitleDraft, updateThread]);
 
   const handleDeleteThread = (threadId: string) => {
     if (safeThreads.length <= 1) return;
@@ -689,7 +739,7 @@ Consider pacing, tension building, and character development.`;
     );
   }
 
-  const handleSelectThreadFromList = async (thread: typeof safeThreads[number]) => {
+  const handleSelectThreadFromList = async (thread: ChatThread) => {
     await selectThread(thread);
     setLastUsage(null);
     setCurrentTab('chat');
@@ -708,9 +758,22 @@ Consider pacing, tension building, and character development.`;
             {currentThread?.title || (currentThread?.parentThreadId ? 'Branch' : 'Chat')}
           </Text>
         </View>
-        <TouchableOpacity onPress={() => setCurrentTab('chats')} style={styles.currentChatManageButton}>
-          <Text style={[styles.currentChatManageText, { color: colors.primary }]}>View all</Text>
-        </TouchableOpacity>
+        <View style={styles.currentChatActions}>
+          {currentThread ? (
+            <TouchableOpacity
+              onPress={() => handleOpenRenameThread(currentThread)}
+              style={styles.currentChatManageButton}
+              disabled={isLoading}
+            >
+              <Text style={[styles.currentChatManageText, { color: colors.primary, opacity: isLoading ? 0.5 : 1 }]}>
+                Rename
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity onPress={() => setCurrentTab('chats')} style={styles.currentChatManageButton}>
+            <Text style={[styles.currentChatManageText, { color: colors.primary }]}>View all</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       {/* Quick Actions */}
       {safeMessages.length === 0 && liveMessages.length === 0 && !isLoading && (
@@ -982,11 +1045,11 @@ Consider pacing, tension building, and character development.`;
               disabled={isLoading}
               activeOpacity={0.85}
             >
-              <View style={styles.chatListCardHeader}>
-                <View style={styles.chatListCardTitleWrap}>
-                  <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
-                    {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
-                  </Text>
+                <View style={styles.chatListCardHeader}>
+                  <View style={styles.chatListCardTitleWrap}>
+                    <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
+                      {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
+                    </Text>
                   <View style={styles.chatListMetaRow}>
                     <View
                       style={[
@@ -1014,16 +1077,26 @@ Consider pacing, tension building, and character development.`;
                   </View>
                 </View>
 
-                {safeThreads.length > 1 && (
+                <View style={styles.chatListCardActions}>
                   <TouchableOpacity
-                    onPress={() => handleDeleteThread(thread.id)}
+                    onPress={() => handleOpenRenameThread(thread)}
                     disabled={isLoading}
-                    style={styles.chatDeleteButton}
+                    style={styles.chatListActionButton}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
-                    <X size={14} color={colors.textTertiary} />
+                    <Pencil size={14} color={colors.textTertiary} />
                   </TouchableOpacity>
-                )}
+                  {safeThreads.length > 1 && (
+                    <TouchableOpacity
+                      onPress={() => handleDeleteThread(thread.id)}
+                      disabled={isLoading}
+                      style={styles.chatListActionButton}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <X size={14} color={colors.textTertiary} />
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
               <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]}>
@@ -1150,6 +1223,46 @@ Consider pacing, tension building, and character development.`;
             </View>
           </View>
           <Button title="Save" onPress={handleSaveSystemPrompt} style={styles.savePromptButton} />
+        </Modal>
+
+        <Modal
+          visible={threadTitleModalVisible}
+          onClose={handleCloseRenameThreadModal}
+          title="Rename Chat"
+        >
+          <Text style={[styles.modalDescription, { color: colors.textSecondary }]}>
+            Give this thread a title that makes it easier to find later.
+          </Text>
+          <Text style={[styles.modalLabel, { color: colors.text }]}>Chat Name</Text>
+          <Input
+            value={threadTitleDraft}
+            onChangeText={setThreadTitleDraft}
+            placeholder="e.g., Opening Scene Rewrite"
+            autoFocus
+            returnKeyType="done"
+            onSubmitEditing={() => {
+              void handleSaveThreadTitle();
+            }}
+            containerStyle={styles.renameThreadInput}
+          />
+          <View style={styles.renameThreadActions}>
+            <Button
+              title="Cancel"
+              onPress={handleCloseRenameThreadModal}
+              variant="secondary"
+              disabled={isSavingThreadTitle}
+              style={styles.renameThreadButton}
+            />
+            <Button
+              title="Save"
+              onPress={() => {
+                void handleSaveThreadTitle();
+              }}
+              loading={isSavingThreadTitle}
+              disabled={!threadTitleDraft.trim()}
+              style={styles.renameThreadButton}
+            />
+          </View>
         </Modal>
       </View>
     </>
@@ -1375,6 +1488,11 @@ const styles = StyleSheet.create({
   currentChatManageButton: {
     paddingVertical: 6,
   },
+  currentChatActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   currentChatManageText: {
     fontSize: 13,
     fontWeight: '700',
@@ -1445,8 +1563,14 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  chatDeleteButton: {
+  chatListCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     paddingTop: 2,
+  },
+  chatListActionButton: {
+    padding: 2,
   },
   chatListTimestamp: {
     fontSize: 12,
@@ -1787,6 +1911,16 @@ const styles = StyleSheet.create({
   },
   savePromptButton: {
     marginTop: 20,
+  },
+  renameThreadInput: {
+    marginBottom: 20,
+  },
+  renameThreadActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  renameThreadButton: {
+    flex: 1,
   },
   modalLabel: {
     fontSize: 14,
