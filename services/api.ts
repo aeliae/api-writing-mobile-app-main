@@ -7,7 +7,7 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // Token/cost safety caps (in characters, ~4 chars per token)
 const MAX_KNOWLEDGE_INDEX_CHARS = 6000;
 const MAX_RELEVANT_CHUNKS = 5;
-const MAX_CHUNK_CONTEXT_CHARS = 20000;
+const MAX_CHUNK_CONTEXT_CHARS = 40000;
 const MAX_FULL_FILE_CHARS = 30000;
 
 interface OpenRouterMessage {
