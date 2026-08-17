@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, ApiUsage } from '@/types';
+import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, ApiUsage, AVAILABLE_MODELS } from '@/types';
 import { generateId } from '@/utils/helpers';
 
 const KEYS = {
@@ -473,10 +473,11 @@ function normalizeStoredSettings(raw: unknown): Settings {
   }
 
   const theme = readString(raw.theme, raw.themeMode)?.toLowerCase();
+  const selectedModel = readText(raw.selectedModel, raw.model, raw.modelId) || defaults.selectedModel;
 
   return {
     openRouterApiKey: readText(raw.openRouterApiKey, raw.apiKey, raw.api_key) || '',
-    selectedModel: readText(raw.selectedModel, raw.model, raw.modelId) || defaults.selectedModel,
+    selectedModel: AVAILABLE_MODELS.some((model) => model.id === selectedModel) ? selectedModel : defaults.selectedModel,
     theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : defaults.theme,
   };
 }
