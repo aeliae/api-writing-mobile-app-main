@@ -38,40 +38,40 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
   const costPer1M: Record<string, { input: number; output: number }> = {
     // Anthropic
     'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
-    'anthropic/claude-3.5-sonnet': { input: 3, output: 15 },
+    'anthropic/claude-3.5-sonnet': { input: 6, output: 30 },
     // DeepSeek
-    'deepseek/deepseek-v4-pro': { input: 0.435, output: 0.87 },
-    'deepseek/deepseek-v4-flash': { input: 0.1, output: 0.2 },
+    'deepseek/deepseek-v4-pro': { input: 0.66, output: 1.98 },
+    'deepseek/deepseek-v4-pro-0813': { input: 0.66, output: 1.98 },
+    'deepseek/deepseek-v4-flash': { input: 0.0826, output: 0.1652 },
+    'deepseek/deepseek-v4-flash-0731': { input: 0.14, output: 0.28 },
     // Google
     'google/gemini-pro-1.5': { input: 1.25, output: 5 },
     'google/gemma-4-31b-it:free': { input: 0, output: 0 },
-    'google/gemma-4-31b-it': { input: 0.12, output: 0.37 },
+    'google/gemma-4-31b-it': { input: 0.1, output: 0.34 },
     // Meta
-    'meta-llama/llama-3.1-70b-instruct': { input: 0.9, output: 0.9 },
+    'meta-llama/llama-3.1-70b-instruct': { input: 0.4, output: 0.4 },
     // MiniMax
-    'minimax/minimax-m2.7': { input: 0.279, output: 1.2 },
+    'minimax/minimax-m2.7': { input: 0.3, output: 1.2 },
     // Mistral
     'mistralai/mistral-large': { input: 2, output: 6 },
     // Moonshot AI
-    'moonshotai/kimi-k2.6': { input: 0.73, output: 3.49 },
+    'moonshotai/kimi-k2.6': { input: 0.5605, output: 2.36 },
     // OpenAI
     'openai/gpt-4o': { input: 2.5, output: 10 },
     'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
-    // OpenRouter
-    'openrouter/owl-alpha': { input: 0, output: 0 },
     // Z.ai GLM Models
     'z-ai/glm-4-32b': { input: 0.1, output: 0.1 },
     'z-ai/glm-4.5-air': { input: 0.13, output: 0.85 },
     'z-ai/glm-4.5-air:free': { input: 0, output: 0 },
     'z-ai/glm-4.5': { input: 0.6, output: 2.2 },
     'z-ai/glm-4.5v': { input: 0.6, output: 1.8 },
-    'z-ai/glm-4.6': { input: 0.43, output: 1.74 },
+    'z-ai/glm-4.6': { input: 0.5, output: 2 },
     'z-ai/glm-4.6v': { input: 0.3, output: 0.9 },
     'z-ai/glm-4.7': { input: 0.4, output: 1.75 },
     'z-ai/glm-4.7-flash': { input: 0.06, output: 0.4 },
     'z-ai/glm-5': { input: 0.6, output: 1.92 },
     'z-ai/glm-5-turbo': { input: 1.2, output: 4 },
-    'z-ai/glm-5.1': { input: 0.98, output: 3.08 },
+    'z-ai/glm-5.1': { input: 0.966, output: 3.036 },
     'z-ai/glm-5v-turbo': { input: 1.2, output: 4 },
   };
 
