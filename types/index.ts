@@ -122,6 +122,7 @@ export const AVAILABLE_MODELS = [
   { id: 'z-ai/glm-4.7', name: 'GLM-4.7', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.40', outputCost: '$1.75' },
   { id: 'z-ai/glm-4.7-flash', name: 'GLM-4.7 Flash', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.06', outputCost: '$0.40' },
   { id: 'z-ai/glm-5', name: 'GLM-5', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.60', outputCost: '$1.92' },
+  { id: 'z-ai/glm-5.2', name: 'GLM-5.2', provider: 'Z.ai', contextLength: '1M', inputCost: '$1.19', outputCost: '$3.74' },
   { id: 'z-ai/glm-5-turbo', name: 'GLM-5 Turbo', provider: 'Z.ai', contextLength: '203K', inputCost: '$1.20', outputCost: '$4.00' },
   { id: 'z-ai/glm-5.1', name: 'GLM-5.1', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.966', outputCost: '$3.036' },
   { id: 'z-ai/glm-5v-turbo', name: 'GLM-5V Turbo', provider: 'Z.ai', contextLength: '203K', inputCost: '$1.20', outputCost: '$4.00' },
