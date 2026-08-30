@@ -70,6 +70,7 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'z-ai/glm-4.7': { input: 0.4, output: 1.75 },
     'z-ai/glm-4.7-flash': { input: 0.06, output: 0.4 },
     'z-ai/glm-5': { input: 0.6, output: 1.92 },
+    'z-ai/glm-5.2': { input: 1.19, output: 3.74 },
     'z-ai/glm-5-turbo': { input: 1.2, output: 4 },
     'z-ai/glm-5.1': { input: 0.966, output: 3.036 },
     'z-ai/glm-5v-turbo': { input: 1.2, output: 4 },
