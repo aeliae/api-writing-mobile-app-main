@@ -40,7 +40,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
-import { formatTokens, formatDate } from '@/utils/helpers';
+import { formatTokens, formatDate, getModelDisplayName } from '@/utils/helpers';
 import { ChatThread, Message, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
@@ -216,7 +216,7 @@ export default function ProjectScreen() {
   const {
     loadProjects, selectProject, currentProject,
     threads, currentThread, createThread, branchThread, selectThread, updateThread, deleteThread,
-    messages, loadMessages, clearMessages,
+    messages, loadMessages, loadThreads, clearMessages,
     files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
   } = useApp();
@@ -419,7 +419,10 @@ export default function ProjectScreen() {
         total: response.usage.totalTokens,
       });
 
-      await loadMessages(currentProject.id, currentThread.id);
+      await Promise.all([
+        loadMessages(currentProject.id, currentThread.id),
+        loadThreads(currentProject.id),
+      ]);
       setLiveMessages([]);
       await loadProjects();
     } catch (err) {
@@ -441,6 +444,7 @@ export default function ProjectScreen() {
     inputText,
     isLoading,
     loadMessages,
+    loadThreads,
     loadProjects,
     safeMessages,
     settings.openRouterApiKey,
@@ -493,7 +497,10 @@ export default function ProjectScreen() {
         total: response.usage.totalTokens,
       });
 
-      await loadMessages(currentProject.id, currentThread.id);
+      await Promise.all([
+        loadMessages(currentProject.id, currentThread.id),
+        loadThreads(currentProject.id),
+      ]);
       setLiveMessages([]);
       await loadProjects();
     } catch (err) {
@@ -503,6 +510,8 @@ export default function ProjectScreen() {
         role: 'assistant',
         content: lastAssistantMsg.content,
         tokens: lastAssistantMsg.tokens,
+        modelId: lastAssistantMsg.modelId,
+        cost: lastAssistantMsg.cost,
       });
       await loadMessages(currentProject.id, currentThread.id);
       setLiveMessages([]);
@@ -520,6 +529,7 @@ export default function ProjectScreen() {
     currentThread,
     isLoading,
     loadMessages,
+    loadThreads,
     loadProjects,
     safeMessages,
     systemPrompt,
@@ -1029,6 +1039,7 @@ Consider pacing, tension building, and character development.`;
           const parentThread = thread.parentThreadId
             ? safeThreads.find((candidate) => candidate.id === thread.parentThreadId) || null
             : null;
+          const modelName = getModelDisplayName(thread.lastMessageModelId);
 
           return (
             <TouchableOpacity
@@ -1069,6 +1080,20 @@ Consider pacing, tension building, and character development.`;
                         {thread.parentThreadId ? 'Branch' : 'Main'}
                       </Text>
                     </View>
+                    {modelName && (
+                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]} numberOfLines={1}>
+                          {modelName}
+                        </Text>
+                      </View>
+                    )}
+                    {thread.lastMessageCost && (
+                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]}>
+                          {thread.lastMessageCost}
+                        </Text>
+                      </View>
+                    )}
                     {isActive && (
                       <View style={[styles.chatListBadge, { backgroundColor: colors.successLight, borderColor: colors.success }]}>
                         <Text style={[styles.chatListBadgeText, { color: colors.success }]}>Open</Text>
@@ -1562,6 +1587,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+  },
+  chatListDetailBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    maxWidth: '68%',
+  },
+  chatListDetailText: {
+    fontSize: 11,
+    fontWeight: '600',
   },
   chatListCardActions: {
     flexDirection: 'row',
