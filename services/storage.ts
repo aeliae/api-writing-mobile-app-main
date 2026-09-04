@@ -335,6 +335,8 @@ function normalizeStoredMessage(raw: unknown, threadProjectMap: Map<string, stri
 
   const createdAt = readDate(raw.createdAt, raw.created_at, raw.timestamp, raw.date) || new Date().toISOString();
   const tokens = readNumber(raw.tokens, raw.tokenCount, raw.token_count, raw.completionTokens);
+  const modelId = readText(raw.modelId, raw.model_id, raw.model);
+  const cost = readText(raw.cost, raw.price);
 
   return {
     id,
@@ -344,6 +346,8 @@ function normalizeStoredMessage(raw: unknown, threadProjectMap: Map<string, stri
     content,
     createdAt,
     ...(tokens !== undefined ? { tokens } : {}),
+    ...(modelId !== undefined ? { modelId } : {}),
+    ...(cost !== undefined ? { cost } : {}),
   };
 }
 
@@ -1008,9 +1012,28 @@ export async function getAllThreads(): Promise<ChatThread[]> {
 }
 
 export async function getProjectThreads(projectId: string): Promise<ChatThread[]> {
-  const threads = await getAllThreads();
+  const threads = (await getAllThreads()).filter(thread => thread.projectId === projectId);
+  const messages = await getRawMessages();
+  const latestAssistantByThread = new Map<string, Message>();
+
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.projectId !== projectId) continue;
+
+    const current = latestAssistantByThread.get(message.threadId);
+    if (!current || new Date(message.createdAt).getTime() >= new Date(current.createdAt).getTime()) {
+      latestAssistantByThread.set(message.threadId, message);
+    }
+  }
+
   return threads
-    .filter(thread => thread.projectId === projectId)
+    .map(thread => {
+      const lastAssistant = latestAssistantByThread.get(thread.id);
+      return {
+        ...thread,
+        lastMessageModelId: lastAssistant?.modelId,
+        lastMessageCost: lastAssistant?.cost,
+      };
+    })
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
