@@ -394,7 +394,13 @@ export async function sendMessage(
       await addMessage({ projectId, threadId, role: 'user', content: userMessage, tokens: promptTokens });
     }
     const savedAssistantMessage = await addMessage({
-      projectId, threadId, role: 'assistant', content: assistantContent, tokens: completionTokens,
+      projectId,
+      threadId,
+      role: 'assistant',
+      content: assistantContent,
+      tokens: completionTokens,
+      modelId: settings.selectedModel,
+      cost: usage.cost,
     });
 
     return { message: savedAssistantMessage, usage };
