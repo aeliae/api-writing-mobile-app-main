@@ -92,14 +92,14 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, o
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
-      <View style={{
+      <View style={[styles.userMessage, {
         padding: 14,
         marginVertical: 8,
         backgroundColor: colors.proseUserBg,
         borderRadius: 8,
         borderLeftWidth: 3,
         borderLeftColor: colors.proseUserAccent,
-      }}>
+      }]}>
         <Text style={{
           fontSize: 11,
           fontWeight: '600',
@@ -109,8 +109,8 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, o
           marginBottom: 8,
         }}>You</Text>
         <Text style={{
-          fontSize: 15,
-          lineHeight: 24,
+          fontSize: 17,
+          lineHeight: 26,
           color: colors.proseUserText,
         }}>{message.content}</Text>
         {onBranch && (
@@ -132,11 +132,11 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, o
 
   // AI — full-width serif prose, amber dot label
   return (
-    <View style={{
+    <View style={[styles.assistantMessage, {
       paddingVertical: 16,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,
-    }}>
+    }]}>
       <View style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -165,8 +165,8 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, o
       </View>
       <Text style={{
         fontFamily: 'Cormorant_400Regular',
-        fontSize: 16.5,
-        lineHeight: 28,
+        fontSize: 18,
+        lineHeight: 30,
         color: colors.proseAiText,
       }}>
         {message.content || (isStreaming ? 'Thinking...' : '')}
@@ -813,7 +813,7 @@ Consider pacing, tension building, and character development.`;
       <ScrollView
         ref={messagesScrollRef}
         style={styles.messagesContainer}
-        contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 8 }}
+        contentContainerStyle={[styles.messagesContent, styles.writingColumn]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         onLayout={handleMessagesLayout}
@@ -923,15 +923,15 @@ Consider pacing, tension building, and character development.`;
       {/* Action buttons */}
       <View style={styles.actionButtons}>
         <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={() => setSystemPromptModalVisible(true)} disabled={isLoading}>
-          <Settings size={18} color={colors.textSecondary} />
+          <Settings size={16} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Prompt</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={handleClearHistory} disabled={isLoading}>
-          <Trash2 size={18} color={colors.textSecondary} />
+          <Trash2 size={16} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Clear</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.actionButton, isLoading && styles.actionButtonDisabled]} onPress={handleExport} disabled={isLoading}>
-          <Download size={18} color={colors.textSecondary} />
+          <Download size={16} color={colors.textSecondary} />
           <Text style={[styles.actionButtonText, { color: colors.textSecondary }]}>Export</Text>
         </TouchableOpacity>
       </View>
@@ -1167,11 +1167,11 @@ Consider pacing, tension building, and character development.`;
               ]}
               onPress={() => setCurrentTab(tab)}
             >
-              {tab === 'chat' && <Pen size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
-              {tab === 'chats' && <MessageSquare size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
-              {tab === 'tools' && <Sparkles size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
-              {tab === 'memory' && <Brain size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
-              {tab === 'files' && <FolderOpen size={16} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+               {tab === 'chat' && <Pen size={15} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+               {tab === 'chats' && <MessageSquare size={15} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+               {tab === 'tools' && <Sparkles size={15} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+               {tab === 'memory' && <Brain size={15} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
+               {tab === 'files' && <FolderOpen size={15} color={currentTab === tab ? colors.primary : colors.textSecondary} />}
               <Text
                 style={[
                   styles.tabText,
@@ -1465,9 +1465,9 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
-    padding: 8,
+    padding: 6,
     borderBottomWidth: 1,
-    gap: 4,
+    gap: 2,
   },
   tab: {
     flex: 1,
@@ -1475,11 +1475,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 10,
   },
   tabText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
 
@@ -1519,7 +1519,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   currentChatManageText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   chatsContainer: {
@@ -1641,7 +1641,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   quickActionText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
   },
   messagesContainer: {
@@ -1670,6 +1670,19 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 8,
   },
+  writingColumn: {
+    width: '100%',
+    maxWidth: 1200,
+    alignSelf: 'center',
+  },
+  userMessage: {
+    width: '100%',
+    maxWidth: '94%',
+    alignSelf: 'flex-end',
+  },
+  assistantMessage: {
+    width: '100%',
+  },
   messageContainer: {
     marginBottom: 12,
   },
@@ -1685,8 +1698,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   messageText: {
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 17,
+    lineHeight: 26,
   },
   messageActionRow: {
     flexDirection: 'row',
@@ -1774,9 +1787,9 @@ const styles = StyleSheet.create({
   actionButtons: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 24,
-    paddingVertical: 8,
-    paddingBottom: 12,
+    gap: 20,
+    paddingVertical: 6,
+    paddingBottom: 10,
   },
   actionButton: {
     flexDirection: 'row',
@@ -1787,7 +1800,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   actionButtonText: {
-    fontSize: 13,
+    fontSize: 12,
   },
 
   // Tools styles
@@ -1809,7 +1822,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   toolsTabText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
   },
   toolSection: {
