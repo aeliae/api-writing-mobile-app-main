@@ -1,5 +1,13 @@
+import { AVAILABLE_MODELS } from '@/types';
+
 export function generateId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+}
+
+export function getModelDisplayName(modelId?: string): string | undefined {
+  if (!modelId) return undefined;
+
+  return AVAILABLE_MODELS.find(model => model.id === modelId)?.name || modelId.split('/').pop() || modelId;
 }
 
 export function formatDate(date: string): string {
