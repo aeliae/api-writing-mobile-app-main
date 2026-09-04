@@ -15,6 +15,9 @@ export interface ChatThread {
   title: string;
   parentThreadId?: string;
   branchFromMessageId?: string;
+  /** Metadata for the most recent assistant response, populated when loading a thread list. */
+  lastMessageModelId?: string;
+  lastMessageCost?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -27,6 +30,8 @@ export interface Message {
   content: string;
   createdAt: string;
   tokens?: number;
+  modelId?: string;
+  cost?: string;
 }
 
 export interface MemoryEntry {
