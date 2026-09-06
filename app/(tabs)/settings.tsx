@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload, History } from 'lucide-react-native';
@@ -22,6 +23,8 @@ import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBac
 export default function SettingsScreen() {
   const { colors, mode, setThemeMode } = useTheme();
   const { settings, loadingSettings, loadSettings, updateSettings, loadProjects, selectProject } = useApp();
+  const insets = useSafeAreaInsets();
+  const topPadding = Math.max(insets.top + 20, 28);
 
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -373,7 +376,7 @@ export default function SettingsScreen() {
     <>
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingTop: topPadding }]}
         showsVerticalScrollIndicator={false}
       >
       <View style={styles.header}>
@@ -712,7 +715,6 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    paddingTop: 60,
     paddingBottom: 40,
   },
   header: {
