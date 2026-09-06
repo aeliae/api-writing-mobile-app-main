@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Plus, MoveVertical as MoreVertical, Trash2, CreditCard as Edit2 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
@@ -20,6 +21,8 @@ import { Project } from '@/types';
 export default function ProjectsScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const topPadding = Math.max(insets.top + 20, 28);
   const {
     projects,
     loadingProjects,
@@ -144,7 +147,7 @@ export default function ProjectsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: topPadding }]}>
         <Text style={[styles.title, { color: colors.text }]}>Projects</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Your creative writing workspace
@@ -228,7 +231,6 @@ const styles = StyleSheet.create({
   },
   header: {
     padding: 20,
-    paddingTop: 60,
   },
   title: {
     fontSize: 32,
