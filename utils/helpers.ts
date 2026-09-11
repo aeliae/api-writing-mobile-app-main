@@ -52,6 +52,7 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'deepseek/deepseek-v4-pro-0813': { input: 0.66, output: 1.98 },
     'deepseek/deepseek-v4-flash': { input: 0.0826, output: 0.1652 },
     'deepseek/deepseek-v4-flash-0731': { input: 0.14, output: 0.28 },
+    'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 },
     // Google
     'google/gemini-pro-1.5': { input: 1.25, output: 5 },
     'google/gemma-4-31b-it:free': { input: 0, output: 0 },
@@ -64,6 +65,7 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'mistralai/mistral-large': { input: 2, output: 6 },
     // Moonshot AI
     'moonshotai/kimi-k2.6': { input: 0.5605, output: 2.36 },
+    'moonshotai/kimi-k3': { input: 2.34, output: 11.7 },
     // OpenAI
     'openai/gpt-4o': { input: 2.5, output: 10 },
     'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
