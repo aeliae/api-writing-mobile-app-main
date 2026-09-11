@@ -79,8 +79,13 @@ export interface ProjectFileChunk {
 export interface Settings {
   openRouterApiKey: string;
   selectedModel: string;
+  maxOutputTokens: number;
   theme: 'light' | 'dark' | 'system';
 }
+
+export const DEFAULT_MAX_OUTPUT_TOKENS = 20000;
+export const MIN_MAX_OUTPUT_TOKENS = 256;
+export const MAX_MAX_OUTPUT_TOKENS = 100000;
 
 export interface ApiUsage {
   promptTokens: number;
@@ -108,6 +113,7 @@ export const AVAILABLE_MODELS = [
   { id: 'deepseek/deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro 0813', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.66', outputCost: '$1.98' },
   { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash 0423', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.0826', outputCost: '$0.1652' },
   { id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash 0731', provider: 'DeepSeek', contextLength: '1.31M', inputCost: '$0.14', outputCost: '$0.28' },
+  { id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.15', outputCost: '$0.60' },
   { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5', provider: 'Google', contextLength: '1M', inputCost: '$1.25', outputCost: '$5' },
   { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free)', provider: 'Google', contextLength: '262K', inputCost: 'Free', outputCost: 'Free' },
   { id: 'google/gemma-4-31b-it', name: 'Gemma 4 31B (Paid)', provider: 'Google', contextLength: '262K', inputCost: '$0.10', outputCost: '$0.34' },
@@ -115,6 +121,7 @@ export const AVAILABLE_MODELS = [
   { id: 'minimax/minimax-m2.7', name: 'MiniMax M2.7', provider: 'MiniMax', contextLength: '205K', inputCost: '$0.30', outputCost: '$1.20' },
   { id: 'mistralai/mistral-large', name: 'Mistral Large', provider: 'Mistral AI', contextLength: '128K', inputCost: '$2', outputCost: '$6' },
   { id: 'moonshotai/kimi-k2.6', name: 'Kimi K2.6 (Paid)', provider: 'Moonshot AI', contextLength: '262K', inputCost: '$0.5605', outputCost: '$2.36' },
+  { id: 'moonshotai/kimi-k3', name: 'Kimi K3', provider: 'Moonshot AI', contextLength: '1M', inputCost: '$2.34', outputCost: '$11.70' },
   { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI', contextLength: '128K', inputCost: '$2.50', outputCost: '$10' },
   { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI', contextLength: '128K', inputCost: '$0.15', outputCost: '$0.60' },
   { id: 'z-ai/glm-4-32b', name: 'GLM-4 32B', provider: 'Z.ai', contextLength: '128K', inputCost: '$0.10', outputCost: '$0.10' },
