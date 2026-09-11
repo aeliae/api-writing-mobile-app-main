@@ -13,12 +13,19 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
-import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload, History } from 'lucide-react-native';
+import { Monitor, Moon, Sun, Check, Eye, EyeOff, ExternalLink, Download, Upload, History, Search, X, ChevronDown, ChevronUp } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Card, CardHeader, LoadingIndicator, Modal } from '@/components';
-import { AVAILABLE_MODELS } from '@/types';
+import {
+  AVAILABLE_MODELS,
+  MAX_MAX_OUTPUT_TOKENS,
+  MIN_MAX_OUTPUT_TOKENS,
+} from '@/types';
 import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBackup, type AppBackupSnapshot, type AppBackupSummary } from '@/services/storage';
+
+const OUTPUT_TOKEN_PRESETS = [8000, 20000, 50000, 100000];
+type ModelOption = (typeof AVAILABLE_MODELS)[number];
 
 export default function SettingsScreen() {
   const { colors, mode, setThemeMode } = useTheme();
@@ -30,6 +37,11 @@ export default function SettingsScreen() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selectedModel, setSelectedModel] = useState(settings.selectedModel);
+  const [maxOutputTokensInput, setMaxOutputTokensInput] = useState(String(settings.maxOutputTokens));
+  const [savingTokenLimit, setSavingTokenLimit] = useState(false);
+  const [tokenLimitError, setTokenLimitError] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
   const [diagnosticModalVisible, setDiagnosticModalVisible] = useState(false);
   const [runningDiagnostic, setRunningDiagnostic] = useState(false);
   const [diagnosticSummary, setDiagnosticSummary] = useState('');
@@ -50,6 +62,8 @@ export default function SettingsScreen() {
     const syncTimer = setTimeout(() => {
       setApiKey(settings.openRouterApiKey);
       setSelectedModel(settings.selectedModel);
+      setMaxOutputTokensInput(String(settings.maxOutputTokens));
+      setTokenLimitError('');
     }, 0);
 
     return () => clearTimeout(syncTimer);
@@ -72,9 +86,41 @@ export default function SettingsScreen() {
     await updateSettings({ selectedModel: modelId });
   };
 
+  const handleSaveTokenLimit = async () => {
+    const parsed = Number(maxOutputTokensInput);
+    if (!Number.isInteger(parsed) || parsed < MIN_MAX_OUTPUT_TOKENS || parsed > MAX_MAX_OUTPUT_TOKENS) {
+      setTokenLimitError(
+        `Enter a whole number from ${MIN_MAX_OUTPUT_TOKENS.toLocaleString()} to ${MAX_MAX_OUTPUT_TOKENS.toLocaleString()}.`,
+      );
+      return;
+    }
+
+    setSavingTokenLimit(true);
+    try {
+      await updateSettings({ maxOutputTokens: parsed });
+      setMaxOutputTokensInput(String(parsed));
+      setTokenLimitError('');
+      Alert.alert('Success', 'Response token limit saved');
+    } catch {
+      Alert.alert('Error', 'Failed to save response token limit');
+    } finally {
+      setSavingTokenLimit(false);
+    }
+  };
+
   const handleThemeChange = (newMode: 'light' | 'dark' | 'system') => {
     setThemeMode(newMode);
   };
+
+  const normalizedModelQuery = modelQuery.trim().toLowerCase();
+  const filteredModels = AVAILABLE_MODELS.filter((model) => {
+    if (!normalizedModelQuery) return true;
+    return `${model.name} ${model.provider}`.toLowerCase().includes(normalizedModelQuery);
+  });
+  const modelGroups = filteredModels.reduce<Record<string, ModelOption[]>>((groups, model) => {
+    (groups[model.provider] ||= []).push(model);
+    return groups;
+  }, {});
 
   const formatBackupSummary = (summary: AppBackupSummary) => {
     const parts = [
@@ -436,63 +482,194 @@ export default function SettingsScreen() {
           title="AI Model"
           subtitle="Choose the model for your conversations"
         />
+        <View style={styles.modelSearchArea}>
+          <Input
+            value={modelQuery}
+            onChangeText={setModelQuery}
+            placeholder="Search models or providers"
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel="Search models or providers"
+            leftIcon={<Search size={17} color={colors.textSecondary} />}
+            rightIcon={modelQuery ? (
+              <TouchableOpacity onPress={() => setModelQuery('')} accessibilityLabel="Clear model search">
+                <X size={17} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ) : undefined}
+            containerStyle={styles.modelSearchInput}
+          />
+          <Text style={[styles.modelSearchMeta, { color: colors.textTertiary }]}>
+            {normalizedModelQuery
+              ? `${filteredModels.length} result${filteredModels.length === 1 ? '' : 's'}`
+              : `${AVAILABLE_MODELS.length} models available`}
+          </Text>
+        </View>
         <View style={styles.modelList}>
-          {AVAILABLE_MODELS.map((model) => (
-            <TouchableOpacity
-              key={model.id}
-              style={[
-                styles.modelItem,
-                {
-                  backgroundColor:
-                    selectedModel === model.id
-                      ? colors.primaryLight
-                      : colors.surfaceSecondary,
-                  borderColor:
-                    selectedModel === model.id
-                      ? colors.primary
-                      : 'transparent',
-                },
-              ]}
-              onPress={() => handleSelectModel(model.id)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.modelInfo}>
-                <View style={styles.modelHeader}>
-                  <Text
-                    style={[
-                      styles.modelName,
-                      { color: selectedModel === model.id ? colors.primary : colors.text },
-                    ]}
-                  >
-                    {model.name}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.modelProvider,
-                      { color: colors.textSecondary },
-                    ]}
-                  >
-                    {model.provider}
+          {Object.entries(modelGroups).map(([provider, models]) => {
+            const isExpanded = Boolean(normalizedModelQuery) || collapsedProviders[provider] !== true;
+            const providerHeaderContent = (
+              <>
+                <View style={styles.providerHeaderCopy}>
+                  <Text style={[styles.providerTitle, { color: colors.text }]}>{provider}</Text>
+                  <Text style={[styles.providerCount, { color: colors.textTertiary }]}>
+                    {models.length} model{models.length === 1 ? '' : 's'}
                   </Text>
                 </View>
-                <View style={styles.modelDetails}>
-                  {model.contextLength && (
-                    <Text style={[styles.modelMeta, { color: colors.textTertiary }]}>
-                      {model.contextLength} context
-                    </Text>
-                  )}
-                  {model.inputCost && model.outputCost && (
-                    <Text style={[styles.modelMeta, { color: colors.textTertiary }]}>
-                      {model.inputCost === 'Free' ? 'Free' : `${model.inputCost}/${model.outputCost} per 1M`}
-                    </Text>
-                  )}
-                </View>
+                {!normalizedModelQuery && (
+                  isExpanded ? (
+                    <ChevronUp size={17} color={colors.textSecondary} />
+                  ) : (
+                    <ChevronDown size={17} color={colors.textSecondary} />
+                  )
+                )}
+              </>
+            );
+
+            return (
+              <View key={provider} style={styles.providerGroup}>
+                {normalizedModelQuery ? (
+                  <View style={styles.providerHeader}>
+                    {providerHeaderContent}
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.providerHeader}
+                    onPress={() => setCollapsedProviders((previous) => ({
+                      ...previous,
+                      [provider]: isExpanded,
+                    }))}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} ${provider} models`}
+                  >
+                    {providerHeaderContent}
+                  </TouchableOpacity>
+                )}
+
+                {isExpanded && (
+                  <View style={styles.providerModels}>
+                    {models.map((model) => (
+                      <TouchableOpacity
+                        key={model.id}
+                        style={[
+                          styles.modelItem,
+                          {
+                            backgroundColor:
+                              selectedModel === model.id
+                                ? colors.primaryLight
+                                : colors.surfaceSecondary,
+                            borderColor:
+                              selectedModel === model.id
+                                ? colors.primary
+                                : 'transparent',
+                          },
+                        ]}
+                        onPress={() => handleSelectModel(model.id)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.modelInfo}>
+                          <Text
+                            style={[
+                              styles.modelName,
+                              { color: selectedModel === model.id ? colors.primary : colors.text },
+                            ]}
+                          >
+                            {model.name}
+                          </Text>
+                          <View style={styles.modelDetails}>
+                            {model.contextLength && (
+                              <Text style={[styles.modelMeta, { color: colors.textTertiary }]}>
+                                {model.contextLength} context
+                              </Text>
+                            )}
+                            {model.inputCost && model.outputCost && (
+                              <Text style={[styles.modelMeta, { color: colors.textTertiary }]}>
+                                {model.inputCost === 'Free' ? 'Free' : `${model.inputCost}/${model.outputCost} per 1M`}
+                              </Text>
+                            )}
+                          </View>
+                        </View>
+                        {selectedModel === model.id && (
+                          <Check size={20} color={colors.primary} />
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
               </View>
-              {selectedModel === model.id && (
-                <Check size={20} color={colors.primary} />
-              )}
-            </TouchableOpacity>
-          ))}
+            );
+          })}
+          {filteredModels.length === 0 && (
+            <View style={styles.modelEmptyState}>
+              <Search size={20} color={colors.textTertiary} />
+              <Text style={[styles.modelEmptyTitle, { color: colors.text }]}>No models found</Text>
+              <Text style={[styles.modelEmptyDescription, { color: colors.textSecondary }]}>
+                Try a different model name or provider.
+              </Text>
+            </View>
+          )}
+        </View>
+      </Card>
+
+      {/* Response Length */}
+      <Card style={styles.card}>
+        <CardHeader
+          title="Response Length"
+          subtitle="Set the maximum number of tokens the model may generate"
+        />
+        <View style={styles.sectionContent}>
+          <Input
+            label="Max response tokens"
+            value={maxOutputTokensInput}
+            onChangeText={(value) => {
+              setMaxOutputTokensInput(value.replace(/\D/g, ''));
+              setTokenLimitError('');
+            }}
+            placeholder="20000"
+            keyboardType="number-pad"
+            inputMode="numeric"
+            error={tokenLimitError}
+            hint="This is separate from the model's context window. The provider may enforce a lower model-specific maximum."
+          />
+          <View style={styles.tokenPresets}>
+            {OUTPUT_TOKEN_PRESETS.map((value) => (
+              <TouchableOpacity
+                key={value}
+                style={[
+                  styles.tokenPreset,
+                  {
+                    backgroundColor:
+                      maxOutputTokensInput === String(value)
+                        ? colors.primaryLight
+                        : colors.surfaceSecondary,
+                    borderColor:
+                      maxOutputTokensInput === String(value)
+                        ? colors.primary
+                        : 'transparent',
+                  },
+                ]}
+                onPress={() => {
+                  setMaxOutputTokensInput(String(value));
+                  setTokenLimitError('');
+                }}
+              >
+                <Text
+                  style={[
+                    styles.tokenPresetLabel,
+                    { color: maxOutputTokensInput === String(value) ? colors.primary : colors.text },
+                  ]}
+                >
+                  {value >= 1000 ? `${value / 1000}k` : value}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Button
+            title={savingTokenLimit ? 'Saving...' : 'Save Response Limit'}
+            onPress={handleSaveTokenLimit}
+            loading={savingTokenLimit}
+            disabled={savingTokenLimit || Number(maxOutputTokensInput) === settings.maxOutputTokens}
+            style={styles.saveButton}
+          />
         </View>
       </Card>
 
@@ -755,8 +932,42 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
-  modelList: {
+  modelSearchArea: {
     marginTop: 8,
+  },
+  modelSearchInput: {
+    marginBottom: 6,
+  },
+  modelSearchMeta: {
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  modelList: {
+    marginTop: 4,
+  },
+  providerGroup: {
+    marginTop: 8,
+  },
+  providerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  providerHeaderCopy: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  providerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  providerCount: {
+    fontSize: 11,
+  },
+  providerModels: {
+    gap: 8,
   },
   modelItem: {
     flexDirection: 'row',
@@ -764,23 +975,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 12,
     borderRadius: 10,
-    marginBottom: 8,
     borderWidth: 1,
   },
   modelInfo: {
     flex: 1,
   },
-  modelHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
-  },
   modelName: {
     fontSize: 15,
     fontWeight: '600',
-  },
-  modelProvider: {
-    fontSize: 12,
   },
   modelDetails: {
     flexDirection: 'row',
@@ -789,6 +991,36 @@ const styles = StyleSheet.create({
   },
   modelMeta: {
     fontSize: 11,
+  },
+  modelEmptyState: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  modelEmptyTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  modelEmptyDescription: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  tokenPresets: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  tokenPreset: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  tokenPresetLabel: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   themeOptions: {
     flexDirection: 'row',
