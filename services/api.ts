@@ -1,441 +1,149 @@
-import { fetch } from 'expo/fetch';
-import { Message, ApiUsage, ChatResponse, MemoryEntry, ProjectFile, ProjectFileChunk, AVAILABLE_MODELS } from '@/types';
-import { getSettings, getProjectMemories, getProjectFiles, getProjectFileChunks, addMessage, recordApiUsage } from './storage';
+// Core data types for the creative writing assistant
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  systemPrompt: string;
+  storyOutline: string;
+}
 
-// Token/cost safety caps (in characters, ~4 chars per token)
-const MAX_KNOWLEDGE_INDEX_CHARS = 6000;
-const MAX_RELEVANT_CHUNKS = 5;
-const MAX_CHUNK_CONTEXT_CHARS = 50000;
-const MAX_FULL_FILE_CHARS = 30000;
+export interface ChatThread {
+  id: string;
+  projectId: string;
+  title: string;
+  parentThreadId?: string;
+  branchFromMessageId?: string;
+  /** Metadata for the most recent assistant response, populated when loading a thread list. */
+  lastMessageModelId?: string;
+  lastMessageCost?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
-interface OpenRouterMessage {
+export interface Message {
+  id: string;
+  projectId: string;
+  threadId: string;
   role: 'system' | 'user' | 'assistant';
   content: string;
+  createdAt: string;
+  tokens?: number;
+  modelId?: string;
+  cost?: string;
 }
 
-interface OpenRouterResponse {
+export interface MemoryEntry {
   id: string;
-  choices: Array<{
-    message: { role: string; content: string };
-    finish_reason: string;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
+  projectId: string;
+  title: string;
+  content: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public code: string,
-    public status?: number
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
+export interface ProjectFile {
+  id: string;
+  projectId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  content: string;
+  enabled: boolean;
+  summary?: string;
+  keywords?: string[];
+  chunkCount?: number;
+  processingStatus?: 'ready' | 'processing' | 'error';
+  errorMessage?: string;
+  includeMode?: 'auto' | 'summary_only' | 'full';
+  createdAt: string;
+  updatedAt: string;
 }
 
-function buildMemoryContext(memories: MemoryEntry[]): string {
-  if (memories.length === 0) return '';
-  let context = '\n\n## Project Memory & Notes:\n\n';
-  for (const memory of memories) {
-    context += `### ${memory.title}\n${memory.content}\n\n`;
-  }
-  return context;
+export interface ProjectFileChunk {
+  id: string;
+  projectId: string;
+  fileId: string;
+  index: number;
+  title?: string;
+  content: string;
+  summary?: string;
+  keywords?: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
-function scoreChunk(
-  chunk: ProjectFileChunk,
-  file: ProjectFile,
-  queryTerms: string[]
-): number {
-  let score = 0;
-  const chunkTextLower = chunk.content.toLowerCase();
-  const titleLower = (chunk.title || '').toLowerCase();
-  const summaryLower = (chunk.summary || '').toLowerCase();
-  const fileNameLower = file.name.toLowerCase();
-  const chunkKeywords = (chunk.keywords || []).map(k => k.toLowerCase());
-
-  for (const term of queryTerms) {
-    if (term.length < 3) continue;
-    const t = term.toLowerCase();
-
-    if (fileNameLower.includes(t)) score += 2;
-    if (titleLower.includes(t)) score += 5;
-    if (summaryLower.includes(t)) score += 4;
-    if (chunkKeywords.some(k => k.includes(t))) score += 8;
-    if (chunkTextLower.includes(t)) score += 2;
-  }
-
-  // Slight boost for shorter chunks so huge chunks don't always win
-  if (chunk.content.length < 2000) score += 1;
-
-  return score;
+export interface Settings {
+  openRouterApiKey: string;
+  selectedModel: string;
+  maxOutputTokens: number;
+  theme: 'light' | 'dark' | 'system';
 }
 
-function buildQueryTerms(
-  userMessage: string,
-  conversationHistory: Array<{ role: string; content: string }>
-): string[] {
-  const recentHistory = conversationHistory.slice(-3).map(m => m.content).join(' ');
-  const combined = `${userMessage} ${recentHistory}`;
-  return combined
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 3);
+export const DEFAULT_MAX_OUTPUT_TOKENS = 20000;
+export const MIN_MAX_OUTPUT_TOKENS = 256;
+export const MAX_MAX_OUTPUT_TOKENS = 100000;
+
+export interface ApiUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cost?: string;
 }
 
-async function buildProjectKnowledgeContext(
-  projectId: string,
-  userMessage: string,
-  conversationHistory: Array<{ role: string; content: string }>
-): Promise<string> {
-  const files = await getProjectFiles(projectId);
-  const enabledFiles = files.filter(f => f.enabled);
-  if (enabledFiles.length === 0) return '';
-
-  const allChunks = await getProjectFileChunks(projectId);
-  const queryTerms = buildQueryTerms(userMessage, conversationHistory);
-
-  // Build the knowledge index section (compact overview of all files)
-  let indexSection = '\n\n## Project Knowledge Library:\n\n';
-  let indexChars = 0;
-
-  for (const file of enabledFiles) {
-    const mode = file.includeMode || 'auto';
-    const chunkCount = file.chunkCount ?? 1;
-    const summary = file.summary || '';
-    const keywords = (file.keywords || []).slice(0, 10).join(', ');
-
-    let entry = `**${file.name}** (${chunkCount} chunk${chunkCount !== 1 ? 's' : ''}, mode: ${mode})\n`;
-    if (summary) entry += `Summary: ${summary}\n`;
-    if (keywords) entry += `Keywords: ${keywords}\n`;
-    entry += '\n';
-
-    if (indexChars + entry.length <= MAX_KNOWLEDGE_INDEX_CHARS) {
-      indexSection += entry;
-      indexChars += entry.length;
-    } else {
-      indexSection += `**${file.name}** — [index truncated]\n\n`;
-    }
-  }
-
-  // Build the detailed excerpts section
-  let excerptsSection = '';
-  let totalExcerptChars = 0;
-
-  for (const file of enabledFiles) {
-    const mode = file.includeMode || 'auto';
-
-    if (mode === 'summary_only') {
-      if (file.summary) {
-        excerptsSection += `\n### ${file.name} — Summary\n${file.summary}\n`;
-      }
-      continue;
-    }
-
-    if (mode === 'full') {
-      let content = file.content;
-      let truncated = false;
-      const available = MAX_FULL_FILE_CHARS - totalExcerptChars;
-      if (content.length > available) {
-        content = content.slice(0, available);
-        truncated = true;
-      }
-      if (content.trim().length > 0) {
-        excerptsSection += `\n### ${file.name} — Full Content${truncated ? ' [TRUNCATED]' : ''}\n${content}\n`;
-        totalExcerptChars += content.length;
-      }
-      if (totalExcerptChars >= MAX_FULL_FILE_CHARS) break;
-      continue;
-    }
-
-    // auto mode: score and select top relevant chunks
-    const fileChunks = allChunks.filter(c => c.fileId === file.id && c.enabled);
-    if (fileChunks.length === 0) continue;
-
-    const scored = fileChunks
-      .map(chunk => ({ chunk, score: scoreChunk(chunk, file, queryTerms) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_RELEVANT_CHUNKS);
-
-    // Only include chunks with a non-zero score, or fall back to first chunk
-    const toInclude = scored.some(s => s.score > 0)
-      ? scored.filter(s => s.score > 0)
-      : [scored[0]];
-
-    // Sort back by original index for coherent reading order
-    toInclude.sort((a, b) => a.chunk.index - b.chunk.index);
-
-    for (const { chunk } of toInclude) {
-      const available = MAX_CHUNK_CONTEXT_CHARS - totalExcerptChars;
-      if (available <= 0) break;
-
-      let content = chunk.content;
-      let truncated = false;
-      if (content.length > available) {
-        content = content.slice(0, available);
-        truncated = true;
-      }
-
-      const chunkLabel = chunk.title
-        ? `${file.name} — ${chunk.title}`
-        : `${file.name} — chunk ${chunk.index + 1}`;
-
-      let entry = `\n### ${chunkLabel}${truncated ? ' [TRUNCATED]' : ''}\n`;
-      if (chunk.summary) entry += `Summary: ${chunk.summary}\n`;
-      if (chunk.keywords && chunk.keywords.length > 0) entry += `Keywords: ${chunk.keywords.slice(0, 8).join(', ')}\n`;
-      entry += `Content:\n${content}\n`;
-
-      excerptsSection += entry;
-      totalExcerptChars += content.length;
-    }
-
-    if (totalExcerptChars >= MAX_CHUNK_CONTEXT_CHARS) break;
-  }
-
-  let result = indexSection;
-  if (excerptsSection.trim()) {
-    result += '\n## Relevant Project File Excerpts\n' + excerptsSection;
-  }
-
-  return result;
+export interface ChatResponse {
+  message: Message;
+  usage: ApiUsage;
 }
 
-interface SendMessageOptions {
-  onChunk?: (accumulatedContent: string) => void;
-  skipUserMessage?: boolean;
-}
+export const DEFAULT_SYSTEM_PROMPTS = {
+  fantasy: `You are a creative writing assistant specializing in fantasy world-building. Help the user craft immersive fantasy worlds with rich lore, complex characters, and compelling magic systems. Provide detailed suggestions that maintain consistency and internal logic.`,
+  noir: `You are a gritty noir fiction editor. Help craft hard-boiled narratives with sharp dialogue, atmospheric descriptions, and morally complex characters. Keep prose punchy and tension high.`,
+  coach: `You are a supportive creative writing coach. Encourage the writer, provide constructive feedback, and help overcome blocks. Focus on their strengths while gently suggesting improvements. Celebrate their unique voice.`,
+  general: `You are a creative writing assistant. Help the writer develop their story, characters, and prose. Be encouraging while providing honest, constructive feedback. Adapt your style to match the genre and tone they're working in.`,
+};
 
-export async function sendMessage(
-  projectId: string,
-  threadId: string,
-  userMessage: string,
-  systemPrompt: string,
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
-  context?: string,
-  options?: SendMessageOptions
-): Promise<ChatResponse> {
-  let requestStarted = false;
-  let responseProcessed = false;
+export const AVAILABLE_MODELS = [
+  { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku', provider: 'Anthropic', contextLength: '200K', inputCost: '$0.25', outputCost: '$1.25' },
+  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic', contextLength: '200K', inputCost: '$6', outputCost: '$30' },
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro 0423', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.66', outputCost: '$1.98' },
+  { id: 'deepseek/deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro 0813', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.66', outputCost: '$1.98' },
+  { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash 0423', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.0826', outputCost: '$0.1652' },
+  { id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash 0731', provider: 'DeepSeek', contextLength: '1.31M', inputCost: '$0.14', outputCost: '$0.28' },
+  { id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', provider: 'DeepSeek', contextLength: '1M', inputCost: '$0.15', outputCost: '$0.60' },
+  { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5', provider: 'Google', contextLength: '1M', inputCost: '$1.25', outputCost: '$5' },
+  { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (Free)', provider: 'Google', contextLength: '262K', inputCost: 'Free', outputCost: 'Free' },
+  { id: 'google/gemma-4-31b-it', name: 'Gemma 4 31B (Paid)', provider: 'Google', contextLength: '262K', inputCost: '$0.10', outputCost: '$0.34' },
+  { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', provider: 'Meta', contextLength: '128K', inputCost: '$0.40', outputCost: '$0.40' },
+  { id: 'minimax/minimax-m2.7', name: 'MiniMax M2.7', provider: 'MiniMax', contextLength: '205K', inputCost: '$0.30', outputCost: '$1.20' },
+  { id: 'mistralai/mistral-large', name: 'Mistral Large', provider: 'Mistral AI', contextLength: '128K', inputCost: '$2', outputCost: '$6' },
+  { id: 'moonshotai/kimi-k2.6', name: 'Kimi K2.6 (Paid)', provider: 'Moonshot AI', contextLength: '262K', inputCost: '$0.5605', outputCost: '$2.36' },
+  { id: 'moonshotai/kimi-k3', name: 'Kimi K3', provider: 'Moonshot AI', contextLength: '1M', inputCost: '$2.34', outputCost: '$11.70' },
+  { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI', contextLength: '128K', inputCost: '$2.50', outputCost: '$10' },
+  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI', contextLength: '128K', inputCost: '$0.15', outputCost: '$0.60' },
+  { id: 'z-ai/glm-4-32b', name: 'GLM-4 32B', provider: 'Z.ai', contextLength: '128K', inputCost: '$0.10', outputCost: '$0.10' },
+  { id: 'z-ai/glm-4.5-air', name: 'GLM-4.5 Air', provider: 'Z.ai', contextLength: '131K', inputCost: '$0.13', outputCost: '$0.85' },
+  { id: 'z-ai/glm-4.5-air:free', name: 'GLM-4.5 Air (Free)', provider: 'Z.ai', contextLength: '131K', inputCost: 'Free', outputCost: 'Free' },
+  { id: 'z-ai/glm-4.5', name: 'GLM-4.5', provider: 'Z.ai', contextLength: '131K', inputCost: '$0.60', outputCost: '$2.20' },
+  { id: 'z-ai/glm-4.5v', name: 'GLM-4.5V', provider: 'Z.ai', contextLength: '66K', inputCost: '$0.60', outputCost: '$1.80' },
+  { id: 'z-ai/glm-4.6', name: 'GLM-4.6', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.50', outputCost: '$2.00' },
+  { id: 'z-ai/glm-4.6v', name: 'GLM-4.6V', provider: 'Z.ai', contextLength: '131K', inputCost: '$0.30', outputCost: '$0.90' },
+  { id: 'z-ai/glm-4.7', name: 'GLM-4.7', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.40', outputCost: '$1.75' },
+  { id: 'z-ai/glm-4.7-flash', name: 'GLM-4.7 Flash', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.06', outputCost: '$0.40' },
+  { id: 'z-ai/glm-5', name: 'GLM-5', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.60', outputCost: '$1.92' },
+  { id: 'z-ai/glm-5.2', name: 'GLM-5.2', provider: 'Z.ai', contextLength: '1M', inputCost: '$1.19', outputCost: '$3.74' },
+  { id: 'z-ai/glm-5-turbo', name: 'GLM-5 Turbo', provider: 'Z.ai', contextLength: '203K', inputCost: '$1.20', outputCost: '$4.00' },
+  { id: 'z-ai/glm-5.1', name: 'GLM-5.1', provider: 'Z.ai', contextLength: '203K', inputCost: '$0.966', outputCost: '$3.036' },
+  { id: 'z-ai/glm-5v-turbo', name: 'GLM-5V Turbo', provider: 'Z.ai', contextLength: '203K', inputCost: '$1.20', outputCost: '$4.00' },
+];
 
-  try {
-    const settings = await getSettings();
-
-    if (!settings.openRouterApiKey) {
-      throw new ApiError('API key not configured. Please add your OpenRouter API key in Settings.', 'NO_API_KEY');
-    }
-
-    const messages: OpenRouterMessage[] = [];
-
-    const memories = await getProjectMemories(projectId);
-    const memoryContext = buildMemoryContext(memories);
-    const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, conversationHistory);
-
-    let fullSystemPrompt = systemPrompt;
-    if (memoryContext) fullSystemPrompt += memoryContext;
-    if (knowledgeContext) fullSystemPrompt += knowledgeContext;
-    if (context) fullSystemPrompt += '\n\n' + context;
-
-    if (fullSystemPrompt.trim()) {
-      messages.push({ role: 'system', content: fullSystemPrompt.trim() });
-    }
-
-    for (const msg of conversationHistory) {
-      messages.push({ role: msg.role, content: msg.content });
-    }
-    messages.push({ role: 'user', content: userMessage });
-
-    const useStreaming = !!options?.onChunk;
-    const onChunk = options?.onChunk;
-    let assistantContent = '';
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let totalTokens = 0;
-    const processSseLine = (
-      line: string,
-      accumulated: string
-    ): { accumulated: string; done: boolean } => {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) return { accumulated, done: false };
-
-      const payload = trimmed.slice(6);
-      if (payload === '[DONE]') return { accumulated, done: true };
-
-      try {
-        const chunk = JSON.parse(payload);
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta && onChunk) {
-          accumulated += delta;
-          onChunk(accumulated);
-        } else if (delta) {
-          accumulated += delta;
-        }
-        if (chunk.usage) {
-          promptTokens = chunk.usage.prompt_tokens ?? 0;
-          completionTokens = chunk.usage.completion_tokens ?? 0;
-          totalTokens = chunk.usage.total_tokens ?? promptTokens + completionTokens;
-        }
-      } catch {
-        // ignore malformed chunks
-      }
-
-      return { accumulated, done: false };
-    };
-
-    requestStarted = true;
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${settings.openRouterApiKey}`,
-        'Content-Type': 'application/json',
-        'Accept': useStreaming ? 'text/event-stream' : 'application/json',
-        'HTTP-Referer': 'https://creative-writer.app',
-        'X-Title': 'Creative Writing Assistant',
-      },
-      body: JSON.stringify({
-        model: settings.selectedModel,
-        messages,
-        max_tokens: 50000,
-        stream: useStreaming,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData.error?.message || `API error: ${response.status}`;
-      if (response.status === 401) throw new ApiError('Invalid API key. Please check your OpenRouter API key.', 'INVALID_API_KEY', 401);
-      if (response.status === 429) throw new ApiError('Rate limit exceeded. Please wait a moment and try again.', 'RATE_LIMIT', 429);
-      if (response.status === 402) throw new ApiError('Insufficient credits. Please add credits to your OpenRouter account.', 'INSUFFICIENT_CREDITS', 402);
-      throw new ApiError(errorMessage, 'API_ERROR', response.status);
-    }
-
-    if (useStreaming && response.body) {
-      // Progressive streaming (modern React Native / web)
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = '';
-      let buffer = '';
-
-      try {
-        let streamComplete = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const result = processSseLine(line, accumulated);
-            accumulated = result.accumulated;
-            if (result.done) {
-              streamComplete = true;
-              break;
-            }
-          }
-
-          if (streamComplete) break;
-        }
-
-        if (buffer.trim()) {
-          const result = processSseLine(buffer, accumulated);
-          accumulated = result.accumulated;
-        }
-      } finally {
-        reader.releaseLock();
-      }
-
-      assistantContent = accumulated;
-      totalTokens = totalTokens || promptTokens + completionTokens;
-    } else if (useStreaming) {
-      // Streaming was requested but response.body is unavailable (older RN/Expo).
-      // Read the full SSE text at once and parse it.
-      const text = await response.text();
-      let accumulated = '';
-
-      for (const line of text.split('\n')) {
-        const result = processSseLine(line, accumulated);
-        accumulated = result.accumulated;
-        if (result.done) break;
-      }
-
-      assistantContent = accumulated;
-      totalTokens = totalTokens || promptTokens + completionTokens;
-      if (onChunk) onChunk(assistantContent);
-    } else {
-      const data: OpenRouterResponse = await response.json();
-      assistantContent = data.choices[0]?.message?.content || '';
-      promptTokens = data.usage?.prompt_tokens || 0;
-      completionTokens = data.usage?.completion_tokens || 0;
-      totalTokens = data.usage?.total_tokens || promptTokens + completionTokens;
-    }
-
-    responseProcessed = true;
-
-    const usage: ApiUsage = { promptTokens, completionTokens, totalTokens, cost: undefined };
-
-    const model = AVAILABLE_MODELS.find(m => m.id === settings.selectedModel);
-    if (model) {
-      const { estimateCost } = require('@/utils/helpers');
-      usage.cost = estimateCost(promptTokens, completionTokens, settings.selectedModel);
-    }
-
-    await recordApiUsage(usage);
-
-    if (!options?.skipUserMessage) {
-      await addMessage({ projectId, threadId, role: 'user', content: userMessage, tokens: promptTokens });
-    }
-    const savedAssistantMessage = await addMessage({
-      projectId,
-      threadId,
-      role: 'assistant',
-      content: assistantContent,
-      tokens: completionTokens,
-      modelId: settings.selectedModel,
-      cost: usage.cost,
-    });
-
-    return { message: savedAssistantMessage, usage };
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    if (!requestStarted) {
-      throw new ApiError(`Local data error: ${errorMessage}. Please run Storage Diagnostic in Settings.`, 'LOCAL_DATA_ERROR');
-    }
-    if (!responseProcessed) {
-      throw new ApiError(`Network error: ${errorMessage}. Please check your connection.`, 'NETWORK_ERROR');
-    }
-    throw new ApiError(`Local data error: ${errorMessage}. The response arrived, but it could not be saved.`, 'LOCAL_DATA_ERROR');
-  }
-}
-
-export async function validateApiKey(apiKey: string): Promise<boolean> {
-  try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'HTTP-Referer': 'https://creative-writer.app',
-        'X-Title': 'Creative Writing Assistant',
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
-        messages: [{ role: 'user', content: 'Hi' }],
-        max_tokens: 5,
-      }),
-    });
-    return response.ok || response.status === 429;
-  } catch {
-    return false;
-  }
-}
+export const QUICK_ACTIONS = [
+  { id: 'continue', label: 'Continue writing', prompt: 'Please continue the story from where we left off. Maintain the same style and tone.' },
+  { id: 'dialogue', label: 'Suggest dialogue', prompt: 'Suggest natural, engaging dialogue for this scene. Make it feel authentic to the characters.' },
+  { id: 'setting', label: 'Describe setting', prompt: 'Write a vivid, atmospheric description of the current setting. Engage all the senses.' },
+  { id: 'plot-holes', label: 'Find plot holes', prompt: 'Analyze the story so far and identify any potential plot holes, inconsistencies, or areas that need more development.' },
+  { id: 'rewrite', label: 'Rewrite last paragraph', prompt: 'Rewrite the last paragraph to improve prose quality, clarity, and emotional impact.' },
+];
