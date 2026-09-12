@@ -15,6 +15,10 @@ export interface ChatThread {
   title: string;
   parentThreadId?: string;
   branchFromMessageId?: string;
+  /** Compact summary of older conversation turns used for request context. */
+  contextSummary?: string;
+  /** Number of transcript messages represented by contextSummary. */
+  contextSummaryMessageCount?: number;
   /** Metadata for the most recent assistant response, populated when loading a thread list. */
   lastMessageModelId?: string;
   lastMessageCost?: string;
