@@ -1,5 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, ApiUsage, AVAILABLE_MODELS } from '@/types';
+import {
+  Project,
+  ChatThread,
+  Message,
+  MemoryEntry,
+  ProjectFile,
+  ProjectFileChunk,
+  Settings,
+  ApiUsage,
+  AVAILABLE_MODELS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  MIN_MAX_OUTPUT_TOKENS,
+  MAX_MAX_OUTPUT_TOKENS,
+} from '@/types';
 import { generateId } from '@/utils/helpers';
 
 const KEYS = {
@@ -295,6 +308,11 @@ function normalizeStoredThread(raw: unknown): ChatThread | null {
     title: readString(raw.title, raw.name, raw.threadTitle, raw.chatTitle) || DEFAULT_THREAD_TITLE,
     parentThreadId: readString(raw.parentThreadId, raw.parent_thread_id, raw.parentId),
     branchFromMessageId: readString(raw.branchFromMessageId, raw.branch_from_message_id, raw.fromMessageId),
+    contextSummary: readText(raw.contextSummary, raw.context_summary),
+    contextSummaryMessageCount: readNumber(
+      raw.contextSummaryMessageCount,
+      raw.context_summary_message_count,
+    ),
     createdAt,
     updatedAt,
   };
@@ -469,6 +487,7 @@ function normalizeStoredSettings(raw: unknown): Settings {
   const defaults: Settings = {
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     theme: 'system',
   };
 
@@ -478,10 +497,19 @@ function normalizeStoredSettings(raw: unknown): Settings {
 
   const theme = readString(raw.theme, raw.themeMode)?.toLowerCase();
   const selectedModel = readText(raw.selectedModel, raw.model, raw.modelId) || defaults.selectedModel;
+  const maxOutputTokens = readNumber(
+    raw.maxOutputTokens,
+    raw.max_output_tokens,
+    raw.maxTokens,
+    raw.max_tokens,
+  );
 
   return {
     openRouterApiKey: readText(raw.openRouterApiKey, raw.apiKey, raw.api_key) || '',
     selectedModel: AVAILABLE_MODELS.some((model) => model.id === selectedModel) ? selectedModel : defaults.selectedModel,
+    maxOutputTokens: maxOutputTokens === undefined
+      ? defaults.maxOutputTokens
+      : Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(maxOutputTokens))),
     theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : defaults.theme,
   };
 }
@@ -503,17 +531,6 @@ function normalizeStoredApiUsage(raw: unknown): ApiUsage | null {
     totalTokens: Math.max(0, totalTokens),
     cost: readText(raw.cost),
   };
-}
-
-function parseStoredObject<T extends object>(data: string | null, fallback: T): T {
-  if (!data) return fallback;
-
-  const parsed = JSON.parse(data);
-  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-    return fallback;
-  }
-
-  return { ...fallback, ...parsed };
 }
 
 function getDefaultBranchTitle(sourceThread: ChatThread, threads: ChatThread[]): string {
@@ -1011,6 +1028,11 @@ export async function getAllThreads(): Promise<ChatThread[]> {
   return getRawThreads();
 }
 
+export async function getThreadById(threadId: string): Promise<ChatThread | null> {
+  const threads = await getAllThreads();
+  return threads.find(thread => thread.id === threadId) || null;
+}
+
 export async function getProjectThreads(projectId: string): Promise<ChatThread[]> {
   const threads = (await getAllThreads()).filter(thread => thread.projectId === projectId);
   const messages = await getRawMessages();
@@ -1207,7 +1229,10 @@ export async function updateMessage(id: string, updates: Partial<Message>): Prom
   };
 
   await saveMessages(allMessages);
-  await updateThread(currentMessage.threadId, {});
+  await updateThread(currentMessage.threadId, {
+    contextSummary: undefined,
+    contextSummaryMessageCount: undefined,
+  });
   await touchProject(currentMessage.projectId);
 }
 
@@ -1221,7 +1246,10 @@ export async function truncateThreadMessages(threadId: string, fromMessageId: st
 
   const threads = await getAllThreads();
   const thread = threads.find(item => item.id === threadId);
-  await updateThread(threadId, {});
+  await updateThread(threadId, {
+    contextSummary: undefined,
+    contextSummaryMessageCount: undefined,
+  });
   if (thread) {
     await touchProject(thread.projectId);
   }
@@ -1230,6 +1258,17 @@ export async function truncateThreadMessages(threadId: string, fromMessageId: st
 export async function clearProjectMessages(projectId: string): Promise<void> {
   const allMessages = await getAllMessages();
   await saveMessages(allMessages.filter(m => m.projectId !== projectId));
+
+  const threads = await getAllThreads();
+  await saveThreads(
+    threads.map(thread => thread.projectId === projectId
+      ? {
+          ...thread,
+          contextSummary: undefined,
+          contextSummaryMessageCount: undefined,
+        }
+      : thread)
+  );
   await touchProject(projectId);
 }
 
@@ -1253,7 +1292,10 @@ export async function deleteMessage(id: string): Promise<void> {
   if (!message) return;
 
   await saveMessages(allMessages.filter(m => m.id !== id));
-  await updateThread(message.threadId, {});
+  await updateThread(message.threadId, {
+    contextSummary: undefined,
+    contextSummaryMessageCount: undefined,
+  });
   await touchProject(message.projectId);
 }
 
@@ -1262,7 +1304,10 @@ export async function clearThreadMessages(threadId: string): Promise<void> {
   const thread = threads.find(item => item.id === threadId);
   await saveMessagesForThread(threadId, []);
   if (thread) {
-    await updateThread(threadId, {});
+    await updateThread(threadId, {
+      contextSummary: undefined,
+      contextSummaryMessageCount: undefined,
+    });
   }
 }
 
@@ -1323,12 +1368,13 @@ export async function getSettings(): Promise<Settings> {
   const defaultSettings: Settings = {
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     theme: 'system',
   };
 
   try {
     const data = await AsyncStorage.getItem(KEYS.SETTINGS);
-    return parseStoredObject<Settings>(data, defaultSettings);
+    return data ? normalizeStoredSettings(parseStoredJson(data)) : defaultSettings;
   } catch (error) {
     console.error('Error loading settings:', error);
   }
