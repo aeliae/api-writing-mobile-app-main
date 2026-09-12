@@ -30,6 +30,17 @@ const MAX_KNOWLEDGE_INDEX_CHARS = 6000;
 const MAX_RELEVANT_CHUNKS = 5;
 const MAX_CHUNK_CONTEXT_CHARS = 20000;
 const MAX_FULL_FILE_CHARS = 30000;
+const MAX_MEMORY_CONTEXT_CHARS = 12000;
+const MAX_MEMORY_ENTRY_CHARS = 5000;
+const MAX_FALLBACK_MEMORY_ENTRIES = 12;
+const MEMORY_QUERY_STOP_WORDS = new Set([
+  'about', 'after', 'also', 'before', 'because', 'current', 'describe', 'does',
+  'from', 'give', 'have', 'help', 'identify', 'into', 'last', 'make', 'more',
+  'natural', 'only', 'please', 'potential', 'provide', 'rewrite', 'same',
+  'scene', 'should', 'some', 'story', 'suggest', 'than', 'that', 'their',
+  'these', 'this', 'those', 'very', 'what', 'when', 'where', 'which', 'with',
+  'would', 'write', 'your',
+]);
 
 // Keep the recent transcript bounded. Older turns are folded into a persisted
 // summary so long conversations do not resend their entire history.
@@ -259,13 +270,67 @@ async function prepareConversationHistory(
   return { history, summary: '' };
 }
 
-function buildMemoryContext(memories: MemoryEntry[]): string {
-  if (memories.length === 0) return '';
-  let context = '\n\n## Project Memory & Notes:\n\n';
-  for (const memory of memories) {
-    context += `### ${memory.title}\n${memory.content}\n\n`;
+function scoreMemory(memory: MemoryEntry, queryTerms: string[]): number {
+  const title = memory.title.toLowerCase();
+  const content = memory.content.toLowerCase();
+  let score = 0;
+
+  for (const term of queryTerms) {
+    if (term.length < 3) continue;
+
+    if (title.includes(term)) score += 8;
+    if (content.includes(term)) score += 2;
   }
-  return context;
+
+  return score;
+}
+
+function buildMemoryContext(memories: MemoryEntry[], queryTerms: string[]): string {
+  if (memories.length === 0) return '';
+
+  const uniqueQueryTerms = Array.from(new Set(
+    queryTerms.filter(term => term.length >= 3 && !MEMORY_QUERY_STOP_WORDS.has(term))
+  ));
+  const rankedMemories = memories
+    .map((memory, index) => ({ memory, index, score: scoreMemory(memory, uniqueQueryTerms) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+
+      const updatedDifference = new Date(b.memory.updatedAt).getTime() - new Date(a.memory.updatedAt).getTime();
+      return updatedDifference || a.index - b.index;
+    });
+
+  const hasRelevantMemory = rankedMemories.some(item => item.score > 0);
+  const candidateMemories = hasRelevantMemory
+    ? rankedMemories
+    : rankedMemories.slice(0, MAX_FALLBACK_MEMORY_ENTRIES);
+
+  const contextHeader = '\n\n## Relevant Project Memory & Notes:\n\n';
+  let context = contextHeader;
+  let contextChars = context.length;
+
+  for (const { memory } of candidateMemories) {
+    if (contextChars >= MAX_MEMORY_CONTEXT_CHARS) break;
+
+    const available = MAX_MEMORY_CONTEXT_CHARS - contextChars;
+    const entryPrefix = `### ${memory.title}\n`;
+    const maxContentChars = Math.min(MAX_MEMORY_ENTRY_CHARS, available - entryPrefix.length - 2);
+    if (maxContentChars <= 0) break;
+
+    const truncationSuffix = '\n[Memory note truncated]';
+    let content = memory.content;
+    if (content.length > maxContentChars) {
+      content = maxContentChars > truncationSuffix.length
+        ? `${content.slice(0, maxContentChars - truncationSuffix.length).trimEnd()}${truncationSuffix}`
+        : content.slice(0, maxContentChars);
+    }
+    const entry = `${entryPrefix}${content}\n\n`;
+
+    context += entry;
+    contextChars += entry.length;
+  }
+
+  return contextChars > contextHeader.length ? context : '';
 }
 
 function scoreChunk(
@@ -460,7 +525,8 @@ export async function sendMessage(
     const messages: OpenRouterMessage[] = [];
 
     const memories = await getProjectMemories(projectId);
-    const memoryContext = buildMemoryContext(memories);
+    const memoryQueryTerms = buildQueryTerms(userMessage, requestHistory);
+    const memoryContext = buildMemoryContext(memories, memoryQueryTerms);
     const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, requestHistory);
 
     let fullSystemPrompt = systemPrompt;
