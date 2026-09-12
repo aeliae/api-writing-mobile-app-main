@@ -1362,7 +1362,7 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
       </View>
 
       <Text style={[styles.memoryHint, { color: colors.textSecondary }]}>
-        Notes are automatically included with every AI message to provide context.
+        Relevant enabled notes are included automatically with each AI message. Less relevant notes may be left out when context is full.
       </Text>
 
       {safeMemories.length === 0 ? (
