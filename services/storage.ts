@@ -9,6 +9,7 @@ import {
   Settings,
   ApiUsage,
   AVAILABLE_MODELS,
+  DEFAULT_MEMORY_MODE,
   DEFAULT_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
@@ -259,6 +260,17 @@ function readDate(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function normalizeMemoryMode(value: unknown): Project['memoryMode'] {
+  if (typeof value !== 'string') return DEFAULT_MEMORY_MODE;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'full' || normalized === 'curated' || normalized === 'smart') {
+    return normalized;
+  }
+
+  return DEFAULT_MEMORY_MODE;
+}
+
 function dedupeById<T extends { id: string }>(items: T[]): T[] {
   const seen = new Set<string>();
   const deduped: T[] = [];
@@ -289,6 +301,7 @@ function normalizeStoredProject(raw: unknown): Project | null {
     updatedAt,
     systemPrompt: readText(raw.systemPrompt, raw.system_prompt) || '',
     storyOutline: readText(raw.storyOutline, raw.story_outline) || '',
+    memoryMode: normalizeMemoryMode(readString(raw.memoryMode, raw.memory_mode)),
   };
 }
 
@@ -390,6 +403,7 @@ function normalizeStoredMemory(raw: unknown): MemoryEntry | null {
     title,
     content,
     enabled: readBoolean(raw.enabled, raw.isEnabled, raw.active) ?? true,
+    pinned: readBoolean(raw.pinned, raw.isPinned, raw.priorityPinned) ?? false,
     createdAt,
     updatedAt,
   };
@@ -975,6 +989,11 @@ export async function getProjects(): Promise<Project[]> {
   }
 }
 
+export async function getProjectById(projectId: string): Promise<Project | null> {
+  const projects = await getProjects();
+  return projects.find(project => project.id === projectId) || null;
+}
+
 export async function saveProjects(projects: Project[]): Promise<void> {
   await AsyncStorage.setItem(KEYS.PROJECTS, JSON.stringify(projects));
 }
@@ -988,6 +1007,7 @@ export async function createProject(name: string, systemPrompt?: string): Promis
     updatedAt: new Date().toISOString(),
     systemPrompt: systemPrompt || '',
     storyOutline: '',
+    memoryMode: DEFAULT_MEMORY_MODE,
   };
   projects.push(newProject);
   await saveProjects(projects);
@@ -1341,6 +1361,7 @@ export async function createMemory(projectId: string, title: string, content: st
     title,
     content,
     enabled: true,
+    pinned: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
