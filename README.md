@@ -46,7 +46,11 @@ The Memory tab is for reusable project context such as:
 - Plot threads
 - Research reminders
 
-Enabled memory notes are automatically appended to the AI context for that project.
+Each project can choose how memory notes are included in AI context:
+
+- `Smart`: ranks enabled notes by relevance and applies a context cap
+- `Full`: includes all enabled notes within a larger safety cap
+- `Curated`: includes only enabled notes marked with the pin icon
 
 ### Files and Context
 
