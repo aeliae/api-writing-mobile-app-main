@@ -11,7 +11,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, MoveVertical as MoreVertical, Trash2, CreditCard as Edit2 } from 'lucide-react-native';
+import { Plus, MoveVertical as MoreVertical, Trash2, ArrowUpRight } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, Input, Modal, EmptyState, LoadingIndicator } from '@/components';
@@ -66,6 +66,7 @@ export default function ProjectsScreen() {
   };
 
   const handleOpenProject = (project: Project) => {
+    setMenuProjectId(null);
     selectProject(project);
     router.push(`/project/${project.id}`);
   };
@@ -88,54 +89,74 @@ export default function ProjectsScreen() {
     );
   };
 
-  const renderProject = ({ item }: { item: Project }) => (
-    <TouchableOpacity
-      style={[styles.projectItem, { backgroundColor: colors.card, borderColor: colors.border }]}
-      onPress={() => handleOpenProject(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.projectContent}>
-        <Text style={[styles.projectName, { color: colors.text }]} numberOfLines={1}>
-          {item.name}
-        </Text>
-        <Text style={[styles.projectDate, { color: colors.textSecondary }]}>
-          Updated {formatDate(item.updatedAt)}
-        </Text>
-        {item.systemPrompt ? (
-          <Text style={[styles.projectHint, { color: colors.textTertiary }]} numberOfLines={1}>
-            System prompt configured
-          </Text>
-        ) : null}
-      </View>
-      <TouchableOpacity
-        style={styles.menuButton}
-        onPress={() => setMenuProjectId(menuProjectId === item.id ? null : item.id)}
+  const renderProject = ({ item }: { item: Project }) => {
+    const isMenuOpen = menuProjectId === item.id;
+
+    return (
+      <View
+        style={[
+          styles.projectItem,
+          { backgroundColor: colors.card, borderColor: colors.border },
+          isMenuOpen && styles.projectItemOpen,
+        ]}
       >
-        <MoreVertical size={20} color={colors.textSecondary} />
-      </TouchableOpacity>
-      {menuProjectId === item.id && (
-        <View style={[styles.menu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <TouchableOpacity
+          style={styles.projectContentButton}
+          onPress={() => handleOpenProject(item)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Open project ${item.name}`}
+        >
+          <View style={styles.projectContent}>
+            <Text style={[styles.projectName, { color: colors.text }]} numberOfLines={1}>
+              {item.name}
+            </Text>
+            <Text style={[styles.projectDate, { color: colors.textSecondary }]}>
+              Updated {formatDate(item.updatedAt)}
+            </Text>
+            {item.systemPrompt ? (
+              <Text style={[styles.projectHint, { color: colors.textTertiary }]} numberOfLines={1}>
+                System prompt configured
+              </Text>
+            ) : null}
+          </View>
+        </TouchableOpacity>
+
+        <View style={styles.projectActions}>
           <TouchableOpacity
-            style={styles.menuItem}
-            onPress={() => {
-              setMenuProjectId(null);
-              handleOpenProject(item);
-            }}
+            style={styles.menuButton}
+            onPress={() => setMenuProjectId(isMenuOpen ? null : item.id)}
+            accessibilityRole="button"
+            accessibilityLabel={`${isMenuOpen ? 'Close' : 'Open'} actions for ${item.name}`}
+            hitSlop={6}
           >
-            <Edit2 size={16} color={colors.textSecondary} />
-            <Text style={[styles.menuItemText, { color: colors.text }]}>Open</Text>
+            <MoreVertical size={20} color={isMenuOpen ? colors.primary : colors.textSecondary} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.menuItem}
-            onPress={() => handleDeleteProject(item)}
-          >
-            <Trash2 size={16} color={colors.error} />
-            <Text style={[styles.menuItemText, { color: colors.error }]}>Delete</Text>
-          </TouchableOpacity>
+
+          {isMenuOpen && (
+            <View style={[styles.menu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => handleOpenProject(item)}
+                accessibilityRole="button"
+              >
+                <ArrowUpRight size={16} color={colors.textSecondary} />
+                <Text style={[styles.menuItemText, { color: colors.text }]}>Open</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => handleDeleteProject(item)}
+                accessibilityRole="button"
+              >
+                <Trash2 size={16} color={colors.error} />
+                <Text style={[styles.menuItemText, { color: colors.error }]}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
-      )}
-    </TouchableOpacity>
-  );
+      </View>
+    );
+  };
 
   if (loadingProjects && !refreshing) {
     return (
@@ -254,6 +275,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     position: 'relative',
   },
+  projectItemOpen: {
+    zIndex: 10,
+    elevation: 10,
+  },
+  projectContentButton: {
+    flex: 1,
+  },
   projectContent: {
     flex: 1,
   },
@@ -270,33 +298,42 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   menuButton: {
-    padding: 8,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
     marginLeft: 8,
+  },
+  projectActions: {
+    position: 'relative',
   },
   menu: {
     position: 'absolute',
-    right: 8,
-    top: 50,
-    borderRadius: 8,
+    right: 0,
+    top: 46,
+    borderRadius: 12,
     borderWidth: 1,
     padding: 4,
-    minWidth: 100,
-    zIndex: 10,
+    minWidth: 132,
+    zIndex: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 12,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     gap: 8,
   },
   menuItemText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '600',
   },
   fab: {
     position: 'absolute',
