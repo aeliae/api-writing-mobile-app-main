@@ -35,13 +35,14 @@ import {
   ChevronDown,
   MessageSquare,
   Pencil,
+  Star,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
 import { formatTokens, formatDate, getModelDisplayName } from '@/utils/helpers';
-import { ChatThread, Message, QUICK_ACTIONS } from '@/types';
+import { ChatThread, MemoryMode, Message, Project, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
 
@@ -51,6 +52,28 @@ const SCROLL_TO_BOTTOM_IDLE_DELAY = 900;
 const SCROLL_TO_BOTTOM_ACTIVE_OPACITY = 1;
 const SCROLL_TO_BOTTOM_IDLE_OPACITY = 0.38;
 const LARGE_NATIVE_EXPORT_THRESHOLD = 50000;
+
+const MEMORY_MODE_OPTIONS: Array<{
+  id: MemoryMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'smart',
+    label: 'Smart',
+    description: 'Prioritizes memories related to the current request.',
+  },
+  {
+    id: 'full',
+    label: 'Full',
+    description: 'Includes all enabled memories within a larger safety limit.',
+  },
+  {
+    id: 'curated',
+    label: 'Curated',
+    description: 'Includes only enabled memories marked with the star.',
+  },
+];
 
 type TabType = 'chat' | 'chats' | 'memory' | 'tools' | 'files';
 type ToolsSubTab = 'outline' | 'scenes' | 'quick';
@@ -1188,7 +1211,7 @@ Consider pacing, tension building, and character development.`;
         {currentTab === 'chat' && chatContent}
         {currentTab === 'chats' && chatsContent}
         {currentTab === 'memory' && (
-          <MemoryPanel projectId={currentProject.id} colors={colors} />
+          <MemoryPanel project={currentProject} colors={colors} />
         )}
         {currentTab === 'tools' && renderTools()}
         {currentTab === 'files' && (
@@ -1295,8 +1318,8 @@ Consider pacing, tension building, and character development.`;
 }
 
 // Memory Panel Component
-function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) {
-  const { memories, loadMemories, createMemory, updateMemory, deleteMemory } = useApp();
+function MemoryPanel({ project, colors }: { project: Project; colors: any }) {
+  const { memories, loadMemories, createMemory, updateMemory, deleteMemory, updateProject } = useApp();
   const safeMemories = Array.isArray(memories) ? memories : [];
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1305,8 +1328,8 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
 
   useFocusEffect(
     useCallback(() => {
-      loadMemories(projectId);
-    }, [projectId, loadMemories])
+      loadMemories(project.id);
+    }, [project.id, loadMemories])
   );
 
   const handleSave = async () => {
@@ -1315,7 +1338,7 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
     if (editingId) {
       await updateMemory(editingId, { title: title.trim(), content: content.trim() });
     } else {
-      await createMemory(projectId, title.trim(), content.trim());
+      await createMemory(project.id, title.trim(), content.trim());
     }
 
     setModalVisible(false);
@@ -1333,6 +1356,11 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
 
   const handleToggle = async (id: string, enabled: boolean) => {
     await updateMemory(id, { enabled: !enabled });
+  };
+
+  const handleModeChange = async (memoryMode: MemoryMode) => {
+    if (memoryMode === project.memoryMode) return;
+    await updateProject(project.id, { memoryMode });
   };
 
   const handleDelete = (memory: typeof safeMemories[number]) => {
@@ -1362,7 +1390,39 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
       </View>
 
       <Text style={[styles.memoryHint, { color: colors.textSecondary }]}>
-        Relevant enabled notes are included automatically with each AI message. Less relevant notes may be left out when context is full.
+        Choose how much project memory each AI message should use. The ON toggle controls eligibility; the star is used by Curated mode.
+      </Text>
+
+      <Text style={[styles.memoryModeLabel, { color: colors.text }]}>Memory mode</Text>
+      <View style={styles.memoryModeOptions}>
+        {MEMORY_MODE_OPTIONS.map((option) => {
+          const isSelected = project.memoryMode === option.id;
+          return (
+            <TouchableOpacity
+              key={option.id}
+              style={[
+                styles.memoryModeOption,
+                {
+                  backgroundColor: isSelected ? colors.primaryLight : colors.surfaceSecondary,
+                  borderColor: isSelected ? colors.primary : colors.border,
+                },
+              ]}
+              onPress={() => {
+                void handleModeChange(option.id);
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              accessibilityLabel={`${option.label} memory mode`}
+            >
+              <Text style={[styles.memoryModeOptionText, { color: isSelected ? colors.primary : colors.textSecondary }]}>
+                {option.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      <Text style={[styles.memoryModeDescription, { color: colors.textSecondary }]}>
+        {MEMORY_MODE_OPTIONS.find((option) => option.id === project.memoryMode)?.description}
       </Text>
 
       {safeMemories.length === 0 ? (
@@ -1386,17 +1446,34 @@ function MemoryPanel({ projectId, colors }: { projectId: string; colors: any }) 
                 <Text style={[styles.memoryCardTitle, { color: colors.text }]}>
                   {memory.title}
                 </Text>
-                <TouchableOpacity
-                  style={[
-                    styles.toggleButton,
-                    { backgroundColor: memory.enabled ? colors.successLight : colors.surfaceSecondary },
-                  ]}
-                  onPress={() => handleToggle(memory.id, memory.enabled)}
-                >
-                  <Text style={[styles.toggleText, { color: memory.enabled ? colors.success : colors.textSecondary }]}>
-                    {memory.enabled ? 'ON' : 'OFF'}
-                  </Text>
-                </TouchableOpacity>
+                <View style={styles.memoryCardActions}>
+                  <TouchableOpacity
+                    style={styles.memoryPinButton}
+                    onPress={() => {
+                      void updateMemory(memory.id, { pinned: !memory.pinned });
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={memory.pinned ? `Unpin ${memory.title}` : `Pin ${memory.title}`}
+                    accessibilityState={{ selected: !!memory.pinned }}
+                  >
+                    <Star
+                      size={17}
+                      color={memory.pinned ? colors.warning : colors.textTertiary}
+                      fill={memory.pinned ? colors.warning : 'transparent'}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.toggleButton,
+                      { backgroundColor: memory.enabled ? colors.successLight : colors.surfaceSecondary },
+                    ]}
+                    onPress={() => handleToggle(memory.id, memory.enabled)}
+                  >
+                    <Text style={[styles.toggleText, { color: memory.enabled ? colors.success : colors.textSecondary }]}>
+                      {memory.enabled ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
               <Text style={[styles.memoryCardContent, { color: colors.textSecondary }]} numberOfLines={3}>
                 {memory.content}
@@ -1886,6 +1963,31 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginBottom: 16,
   },
+  memoryModeLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  memoryModeOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  memoryModeOption: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  memoryModeOptionText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  memoryModeDescription: {
+    fontSize: 12,
+    marginTop: 8,
+    marginBottom: 16,
+  },
   memoryList: {
     flex: 1,
   },
@@ -1903,6 +2005,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
+  },
+  memoryCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  memoryPinButton: {
+    padding: 4,
   },
   memoryCardTitle: {
     fontSize: 16,
