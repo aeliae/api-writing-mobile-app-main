@@ -1,5 +1,9 @@
 // Core data types for the creative writing assistant
 
+export type MemoryMode = 'smart' | 'full' | 'curated';
+
+export const DEFAULT_MEMORY_MODE: MemoryMode = 'smart';
+
 export interface Project {
   id: string;
   name: string;
@@ -7,6 +11,7 @@ export interface Project {
   updatedAt: string;
   systemPrompt: string;
   storyOutline: string;
+  memoryMode: MemoryMode;
 }
 
 export interface ChatThread {
@@ -44,6 +49,7 @@ export interface MemoryEntry {
   title: string;
   content: string;
   enabled: boolean;
+  pinned?: boolean;
   createdAt: string;
   updatedAt: string;
 }
