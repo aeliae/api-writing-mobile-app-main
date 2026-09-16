@@ -6,6 +6,7 @@ import {
   MemoryEntry,
   ProjectFile,
   ProjectFileChunk,
+  MemoryMode,
   AVAILABLE_MODELS,
   DEFAULT_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
@@ -13,6 +14,7 @@ import {
 } from '@/types';
 import {
   getSettings,
+  getProjectById,
   getThreadById,
   getProjectMemories,
   getProjectFiles,
@@ -31,6 +33,8 @@ const MAX_RELEVANT_CHUNKS = 5;
 const MAX_CHUNK_CONTEXT_CHARS = 20000;
 const MAX_FULL_FILE_CHARS = 30000;
 const MAX_MEMORY_CONTEXT_CHARS = 12000;
+const MAX_FULL_MEMORY_CONTEXT_CHARS = 24000;
+const MAX_CURATED_MEMORY_CONTEXT_CHARS = 24000;
 const MAX_MEMORY_ENTRY_CHARS = 5000;
 const MAX_FALLBACK_MEMORY_ENTRIES = 12;
 const MEMORY_QUERY_STOP_WORDS = new Set([
@@ -285,13 +289,20 @@ function scoreMemory(memory: MemoryEntry, queryTerms: string[]): number {
   return score;
 }
 
-function buildMemoryContext(memories: MemoryEntry[], queryTerms: string[]): string {
-  if (memories.length === 0) return '';
+function buildMemoryContext(
+  memories: MemoryEntry[],
+  queryTerms: string[],
+  memoryMode: MemoryMode,
+): string {
+  const modeMemories = memoryMode === 'curated'
+    ? memories.filter(memory => memory.pinned)
+    : memories;
+  if (modeMemories.length === 0) return '';
 
   const uniqueQueryTerms = Array.from(new Set(
     queryTerms.filter(term => term.length >= 3 && !MEMORY_QUERY_STOP_WORDS.has(term))
   ));
-  const rankedMemories = memories
+  const rankedMemories = modeMemories
     .map((memory, index) => ({ memory, index, score: scoreMemory(memory, uniqueQueryTerms) }))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -301,18 +312,23 @@ function buildMemoryContext(memories: MemoryEntry[], queryTerms: string[]): stri
     });
 
   const hasRelevantMemory = rankedMemories.some(item => item.score > 0);
-  const candidateMemories = hasRelevantMemory
-    ? rankedMemories
-    : rankedMemories.slice(0, MAX_FALLBACK_MEMORY_ENTRIES);
+  const candidateMemories = memoryMode === 'smart'
+    ? (hasRelevantMemory ? rankedMemories : rankedMemories.slice(0, MAX_FALLBACK_MEMORY_ENTRIES))
+    : modeMemories.map((memory, index) => ({ memory, index, score: 0 }));
+  const contextBudget = memoryMode === 'smart'
+    ? MAX_MEMORY_CONTEXT_CHARS
+    : memoryMode === 'full'
+      ? MAX_FULL_MEMORY_CONTEXT_CHARS
+      : MAX_CURATED_MEMORY_CONTEXT_CHARS;
 
   const contextHeader = '\n\n## Relevant Project Memory & Notes:\n\n';
   let context = contextHeader;
   let contextChars = context.length;
 
   for (const { memory } of candidateMemories) {
-    if (contextChars >= MAX_MEMORY_CONTEXT_CHARS) break;
+    if (contextChars >= contextBudget) break;
 
-    const available = MAX_MEMORY_CONTEXT_CHARS - contextChars;
+    const available = contextBudget - contextChars;
     const entryPrefix = `### ${memory.title}\n`;
     const maxContentChars = Math.min(MAX_MEMORY_ENTRY_CHARS, available - entryPrefix.length - 2);
     if (maxContentChars <= 0) break;
@@ -524,9 +540,11 @@ export async function sendMessage(
     const requestHistory = preparedConversation.history;
     const messages: OpenRouterMessage[] = [];
 
+    const project = await getProjectById(projectId);
+    const memoryMode = project?.memoryMode || 'smart';
     const memories = await getProjectMemories(projectId);
     const memoryQueryTerms = buildQueryTerms(userMessage, requestHistory);
-    const memoryContext = buildMemoryContext(memories, memoryQueryTerms);
+    const memoryContext = buildMemoryContext(memories, memoryQueryTerms, memoryMode);
     const knowledgeContext = await buildProjectKnowledgeContext(projectId, userMessage, requestHistory);
 
     let fullSystemPrompt = systemPrompt;
