@@ -41,7 +41,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
-import { formatTokens, formatDate, getModelDisplayName } from '@/utils/helpers';
+import { formatTokens, formatDate } from '@/utils/helpers';
 import { ChatThread, MemoryMode, Message, Project, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
@@ -1062,7 +1062,6 @@ Consider pacing, tension building, and character development.`;
           const parentThread = thread.parentThreadId
             ? safeThreads.find((candidate) => candidate.id === thread.parentThreadId) || null
             : null;
-          const modelName = getModelDisplayName(thread.lastMessageModelId);
 
           return (
             <TouchableOpacity
@@ -1079,80 +1078,68 @@ Consider pacing, tension building, and character development.`;
               disabled={isLoading}
               activeOpacity={0.85}
             >
-                <View style={styles.chatListCardHeader}>
-                  <View style={styles.chatListCardTitleWrap}>
-                    <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
-                      {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
-                    </Text>
-                  <View style={styles.chatListMetaRow}>
-                    <View
-                      style={[
-                        styles.chatListBadge,
-                        {
-                          backgroundColor: thread.parentThreadId ? colors.surfaceSecondary : colors.primaryLight,
-                          borderColor: thread.parentThreadId ? colors.border : colors.primary,
-                        },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.chatListBadgeText,
-                          { color: thread.parentThreadId ? colors.textSecondary : colors.primary },
-                        ]}
-                      >
-                        {thread.parentThreadId ? 'Branch' : 'Main'}
-                      </Text>
-                    </View>
-                    {modelName && (
-                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]} numberOfLines={1}>
-                          {modelName}
-                        </Text>
-                      </View>
-                    )}
-                    {thread.lastMessageCost && (
-                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]}>
-                          {thread.lastMessageCost}
-                        </Text>
-                      </View>
-                    )}
-                    {isActive && (
-                      <View style={[styles.chatListBadge, { backgroundColor: colors.successLight, borderColor: colors.success }]}>
-                        <Text style={[styles.chatListBadgeText, { color: colors.success }]}>Open</Text>
-                      </View>
-                    )}
-                  </View>
+              <View style={styles.chatListCardContent}>
+                <View style={styles.chatListCardTitleRow}>
+                  <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
+                    {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
+                  </Text>
+                  <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {formatDate(thread.updatedAt)}
+                  </Text>
                 </View>
 
-                <View style={styles.chatListCardActions}>
-                  <TouchableOpacity
-                    onPress={() => handleOpenRenameThread(thread)}
-                    disabled={isLoading}
-                    style={styles.chatListActionButton}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                <View style={styles.chatListMetaRow}>
+                  <View
+                    style={[
+                      styles.chatListBadge,
+                      {
+                        backgroundColor: thread.parentThreadId ? colors.surfaceSecondary : colors.primaryLight,
+                        borderColor: thread.parentThreadId ? colors.border : colors.primary,
+                      },
+                    ]}
                   >
-                    <Pencil size={14} color={colors.textTertiary} />
-                  </TouchableOpacity>
-                  {safeThreads.length > 1 && (
-                    <TouchableOpacity
-                      onPress={() => handleDeleteThread(thread.id)}
-                      disabled={isLoading}
-                      style={styles.chatListActionButton}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    <Text
+                      style={[
+                        styles.chatListBadgeText,
+                        { color: thread.parentThreadId ? colors.textSecondary : colors.primary },
+                      ]}
                     >
-                      <X size={14} color={colors.textTertiary} />
-                    </TouchableOpacity>
+                      {thread.parentThreadId ? 'Branch' : 'Main'}
+                    </Text>
+                  </View>
+                  {parentThread && (
+                    <Text style={[styles.chatListSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+                      from {parentThread.title || 'another chat'}
+                    </Text>
+                  )}
+                  {isActive && (
+                    <View style={[styles.chatListBadge, { backgroundColor: colors.successLight, borderColor: colors.success }]}>
+                      <Text style={[styles.chatListBadgeText, { color: colors.success }]}>Open</Text>
+                    </View>
                   )}
                 </View>
               </View>
 
-              <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]}>
-                Updated {formatDate(thread.updatedAt)}
-              </Text>
-              <Text style={[styles.chatListSubtitle, { color: colors.textSecondary }]}>
-                {parentThread ? `Branched from ${parentThread.title || 'another chat'}` : 'Primary chat for this project'}
-              </Text>
+              <View style={styles.chatListCardActions}>
+                <TouchableOpacity
+                  onPress={() => handleOpenRenameThread(thread)}
+                  disabled={isLoading}
+                  style={styles.chatListActionButton}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Pencil size={14} color={colors.textTertiary} />
+                </TouchableOpacity>
+                {safeThreads.length > 1 && (
+                  <TouchableOpacity
+                    onPress={() => handleDeleteThread(thread.id)}
+                    disabled={isLoading}
+                    style={styles.chatListActionButton}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <X size={14} color={colors.textTertiary} />
+                  </TouchableOpacity>
+                )}
+              </View>
             </TouchableOpacity>
           );
         })}
@@ -1626,72 +1613,70 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   chatsList: {
-    gap: 12,
-  },
-  chatListCard: {
-    borderWidth: 1,
-    borderRadius: 16,
-    padding: 16,
     gap: 8,
   },
-  chatListCardHeader: {
+  chatListCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
   },
-  chatListCardTitleWrap: {
+  chatListCardContent: {
     flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  chatListCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
   },
   chatListCardTitle: {
-    fontSize: 16,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
     fontWeight: '700',
   },
   chatListMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
+    minWidth: 0,
   },
   chatListBadge: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
   chatListBadgeText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  chatListDetailBadge: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    maxWidth: '68%',
-  },
-  chatListDetailText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
   chatListCardActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingTop: 2,
+    gap: 6,
   },
   chatListActionButton: {
-    padding: 2,
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chatListTimestamp: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11,
+    flexShrink: 0,
   },
   chatListSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 11,
   },
   quickActionsContainer: {
     padding: 16,
