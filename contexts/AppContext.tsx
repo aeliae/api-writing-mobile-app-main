@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings } from '@/types';
+import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, DEFAULT_MAX_OUTPUT_TOKENS } from '@/types';
 import * as storage from '@/services/storage';
 import { pickAndReadFile } from '@/utils/fileImport';
 import { normalizeFileText, chunkText, extractKeywords, createLocalSummary } from '@/utils/fileProcessing';
@@ -80,9 +80,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>({
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     theme: 'system',
   });
-  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [loadingSettings, setLoadingSettings] = useState(true);
 
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     setLoadingProjects(true);
@@ -324,15 +325,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return storage.getFileChunks(fileId);
   }, []);
 
+  const readSettings = useCallback(() => storage.getSettings(), []);
+
   const loadSettings = useCallback(async () => {
     setLoadingSettings(true);
     try {
-      const loadedSettings = await storage.getSettings();
+      const loadedSettings = await readSettings();
       setSettings(loadedSettings);
     } finally {
       setLoadingSettings(false);
     }
-  }, []);
+  }, [readSettings]);
 
   const updateSettings = useCallback(async (updates: Partial<Settings>) => {
     await storage.saveSettings(updates);
@@ -340,8 +343,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
+    let cancelled = false;
+
+    const initializeSettings = async () => {
+      try {
+        const loadedSettings = await readSettings();
+        if (!cancelled) {
+          setSettings(loadedSettings);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to load settings:', error);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingSettings(false);
+        }
+      }
+    };
+
+    void initializeSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [readSettings]);
 
   const value: AppContextType = {
     projects,
