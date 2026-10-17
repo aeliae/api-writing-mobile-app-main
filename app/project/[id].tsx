@@ -6,6 +6,7 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Alert,
@@ -35,13 +36,14 @@ import {
   ChevronDown,
   MessageSquare,
   Pencil,
+  Search,
   Star,
 } from 'lucide-react-native';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
-import { formatTokens, formatDate, getModelDisplayName } from '@/utils/helpers';
+import { formatTokens, formatDate } from '@/utils/helpers';
 import { ChatThread, MemoryMode, Message, Project, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
@@ -257,6 +259,9 @@ export default function ProjectScreen() {
   const [threadTitleDraft, setThreadTitleDraft] = useState('');
   const [threadBeingEdited, setThreadBeingEdited] = useState<ChatThread | null>(null);
   const [isSavingThreadTitle, setIsSavingThreadTitle] = useState(false);
+  const [threadQuery, setThreadQuery] = useState('');
+  const [threadSort, setThreadSort] = useState<'recent' | 'title'>('recent');
+  const [threadSortMenuOpen, setThreadSortMenuOpen] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
 
   const inputRef = useRef<TextInput>(null);
@@ -266,6 +271,27 @@ export default function ProjectScreen() {
   const [scrollToBottomOpacity] = useState(() => new Animated.Value(0));
   const safeThreads = useMemo(() => (Array.isArray(threads) ? threads : []), [threads]);
   const safeMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
+  const showThreadSearch = safeThreads.length >= 6;
+  const filteredThreads = useMemo(() => {
+    const normalizedQuery = showThreadSearch ? threadQuery.trim().toLocaleLowerCase() : '';
+    const matchingThreads = safeThreads.filter((thread) => {
+      if (!normalizedQuery) return true;
+      return (thread.title || (thread.parentThreadId ? 'Branch' : 'Chat'))
+        .toLocaleLowerCase()
+        .includes(normalizedQuery);
+    });
+
+    return [...matchingThreads].sort((a, b) => {
+      if (threadSort === 'title') {
+        const titleCompare = (a.title || 'Chat').localeCompare(b.title || 'Chat', undefined, {
+          sensitivity: 'base',
+        });
+        if (titleCompare !== 0) return titleCompare;
+      }
+
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [safeThreads, showThreadSearch, threadQuery, threadSort]);
   const displayedMessages = [...safeMessages, ...liveMessages];
   const hasLiveAssistantMessage = liveMessages.some((message) => message.role === 'assistant');
   const hasDisplayedMessages = displayedMessages.length > 0;
@@ -699,6 +725,8 @@ Consider pacing, tension building, and character development.`;
   const handleCreateThread = async () => {
     if (!currentProject) return;
     const count = safeThreads.length + 1;
+    setThreadQuery('');
+    setThreadSortMenuOpen(false);
     try {
       await createThread(currentProject.id, `Chat ${count}`);
       setLastUsage(null);
@@ -758,7 +786,10 @@ Consider pacing, tension building, and character development.`;
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => deleteThread(threadId),
+          onPress: () => {
+            setThreadQuery('');
+            void deleteThread(threadId);
+          },
         },
       ]
     );
@@ -773,9 +804,94 @@ Consider pacing, tension building, and character development.`;
   }
 
   const handleSelectThreadFromList = async (thread: ChatThread) => {
+    setThreadSortMenuOpen(false);
     await selectThread(thread);
     setLastUsage(null);
     setCurrentTab('chat');
+  };
+
+  const renderThreadItem = ({ item: thread }: { item: ChatThread }) => {
+    const isActive = currentThread?.id === thread.id;
+    const threadTitle = thread.title || (thread.parentThreadId ? 'Branch' : 'Chat');
+
+    return (
+      <View
+        style={[
+          styles.chatListCard,
+          {
+            backgroundColor: isActive ? colors.primaryLight : colors.surface,
+            borderColor: isActive ? colors.primary : colors.border,
+            opacity: isLoading ? 0.7 : 1,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.chatListCardButton}
+          onPress={() => handleSelectThreadFromList(thread)}
+          disabled={isLoading}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={`Open chat ${threadTitle}`}
+        >
+          <View style={styles.chatListCardContent}>
+            <View style={styles.chatListCardTitleRow}>
+              <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
+                {threadTitle}
+              </Text>
+              <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]} numberOfLines={1}>
+                {formatDate(thread.updatedAt)}
+              </Text>
+            </View>
+
+            <View style={styles.chatListMetaRow}>
+              <View
+                style={[
+                  styles.chatListBadge,
+                  {
+                    backgroundColor: thread.parentThreadId ? colors.surfaceSecondary : colors.primaryLight,
+                    borderColor: thread.parentThreadId ? colors.border : colors.primary,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.chatListBadgeText,
+                    { color: thread.parentThreadId ? colors.textSecondary : colors.primary },
+                  ]}
+                >
+                  {thread.parentThreadId ? 'Branch' : 'Main'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        <View style={styles.chatListCardActions}>
+          <TouchableOpacity
+            onPress={() => handleOpenRenameThread(thread)}
+            disabled={isLoading}
+            style={styles.chatListActionButton}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Rename chat ${threadTitle}`}
+          >
+            <Pencil size={15} color={colors.textTertiary} />
+          </TouchableOpacity>
+          {safeThreads.length > 1 && (
+            <TouchableOpacity
+              onPress={() => handleDeleteThread(thread.id)}
+              disabled={isLoading}
+              style={styles.chatListActionButton}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Delete chat ${threadTitle}`}
+            >
+              <Trash2 size={15} color={colors.textTertiary} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
   };
 
   const chatContent = (
@@ -1039,125 +1155,104 @@ Consider pacing, tension building, and character development.`;
   );
 
   const chatsContent = (
-    <ScrollView style={styles.chatsContainer} contentContainerStyle={styles.chatsContent}>
-      <View style={styles.chatsHeader}>
-        <View style={styles.chatsHeaderCopy}>
-          <Text style={[styles.chatsTitle, { color: colors.text }]}>Project Chats</Text>
-          <Text style={[styles.chatsDescription, { color: colors.textSecondary }]}>
-            Keep alternate directions, branches, and fresh starts in one place.
-          </Text>
-        </View>
-        <Button
-          title="New Chat"
-          size="small"
-          onPress={handleCreateThread}
-          disabled={isLoading}
-          icon={<Plus size={14} color="#FFFFFF" />}
-        />
-      </View>
+    <View style={styles.chatsContainer}>
+      <FlatList
+        data={filteredThreads}
+        renderItem={renderThreadItem}
+        keyExtractor={(thread) => thread.id}
+        contentContainerStyle={styles.chatsContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        ItemSeparatorComponent={() => <View style={styles.chatListSeparator} />}
+        ListHeaderComponent={
+          <>
+            <View style={styles.chatsHeader}>
+              <View style={styles.chatsHeaderCopy}>
+                <Text style={[styles.chatsTitle, { color: colors.text }]}>Project Chats</Text>
+                <Text style={[styles.chatsDescription, { color: colors.textSecondary }]}>
+                  Keep alternate directions, branches, and fresh starts in one place.
+                </Text>
+              </View>
+              <Button
+                title="New Chat"
+                size="small"
+                onPress={handleCreateThread}
+                disabled={isLoading}
+                icon={<Plus size={14} color="#FFFFFF" />}
+              />
+            </View>
 
-      <View style={styles.chatsList}>
-        {safeThreads.map((thread) => {
-          const isActive = currentThread?.id === thread.id;
-          const parentThread = thread.parentThreadId
-            ? safeThreads.find((candidate) => candidate.id === thread.parentThreadId) || null
-            : null;
-          const modelName = getModelDisplayName(thread.lastMessageModelId);
-
-          return (
-            <TouchableOpacity
-              key={thread.id}
-              style={[
-                styles.chatListCard,
-                {
-                  backgroundColor: isActive ? colors.primaryLight : colors.surface,
-                  borderColor: isActive ? colors.primary : colors.border,
-                  opacity: isLoading ? 0.7 : 1,
-                },
-              ]}
-              onPress={() => handleSelectThreadFromList(thread)}
-              disabled={isLoading}
-              activeOpacity={0.85}
-            >
-                <View style={styles.chatListCardHeader}>
-                  <View style={styles.chatListCardTitleWrap}>
-                    <Text style={[styles.chatListCardTitle, { color: colors.text }]} numberOfLines={1}>
-                      {thread.title || (thread.parentThreadId ? 'Branch' : 'Chat')}
-                    </Text>
-                  <View style={styles.chatListMetaRow}>
-                    <View
-                      style={[
-                        styles.chatListBadge,
-                        {
-                          backgroundColor: thread.parentThreadId ? colors.surfaceSecondary : colors.primaryLight,
-                          borderColor: thread.parentThreadId ? colors.border : colors.primary,
-                        },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.chatListBadgeText,
-                          { color: thread.parentThreadId ? colors.textSecondary : colors.primary },
-                        ]}
-                      >
-                        {thread.parentThreadId ? 'Branch' : 'Main'}
-                      </Text>
-                    </View>
-                    {modelName && (
-                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]} numberOfLines={1}>
-                          {modelName}
-                        </Text>
-                      </View>
-                    )}
-                    {thread.lastMessageCost && (
-                      <View style={[styles.chatListDetailBadge, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
-                        <Text style={[styles.chatListDetailText, { color: colors.textSecondary }]}>
-                          {thread.lastMessageCost}
-                        </Text>
-                      </View>
-                    )}
-                    {isActive && (
-                      <View style={[styles.chatListBadge, { backgroundColor: colors.successLight, borderColor: colors.success }]}>
-                        <Text style={[styles.chatListBadgeText, { color: colors.success }]}>Open</Text>
-                      </View>
-                    )}
-                  </View>
-                </View>
-
-                <View style={styles.chatListCardActions}>
+            {showThreadSearch && (
+              <Input
+                placeholder="Search chats by title"
+                value={threadQuery}
+                onChangeText={setThreadQuery}
+                leftIcon={<Search size={17} color={colors.textSecondary} />}
+                rightIcon={threadQuery ? (
                   <TouchableOpacity
-                    onPress={() => handleOpenRenameThread(thread)}
-                    disabled={isLoading}
-                    style={styles.chatListActionButton}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => setThreadQuery('')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear chat search"
+                    hitSlop={6}
                   >
-                    <Pencil size={14} color={colors.textTertiary} />
+                    <X size={17} color={colors.textSecondary} />
                   </TouchableOpacity>
-                  {safeThreads.length > 1 && (
-                    <TouchableOpacity
-                      onPress={() => handleDeleteThread(thread.id)}
-                      disabled={isLoading}
-                      style={styles.chatListActionButton}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <X size={14} color={colors.textTertiary} />
-                    </TouchableOpacity>
+                ) : undefined}
+                containerStyle={styles.threadSearch}
+                accessibilityLabel="Search chats by title"
+              />
+            )}
+
+            {safeThreads.length > 1 && (
+              <View style={styles.threadToolbar}>
+                <Text style={[styles.threadCountText, { color: colors.textSecondary }]}>
+                  {filteredThreads.length} of {safeThreads.length} chats
+                </Text>
+                <View style={styles.threadSortWrap}>
+                  <TouchableOpacity
+                    style={[styles.threadSortButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                    onPress={() => setThreadSortMenuOpen((open) => !open)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Sort chats: ${threadSort === 'recent' ? 'Recent' : 'A to Z'}`}
+                  >
+                    <Text style={[styles.threadSortButtonText, { color: colors.text }]}>
+                      {threadSort === 'recent' ? 'Recent' : 'A–Z'}
+                    </Text>
+                    <ChevronDown size={14} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                  {threadSortMenuOpen && (
+                    <View style={[styles.threadSortMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                      {(['recent', 'title'] as const).map((sort) => (
+                        <TouchableOpacity
+                          key={sort}
+                          style={[styles.threadSortOption, sort === threadSort && { backgroundColor: colors.primaryLight }]}
+                          onPress={() => {
+                            setThreadSort(sort);
+                            setThreadSortMenuOpen(false);
+                          }}
+                          accessibilityRole="button"
+                        >
+                          <Text style={[styles.threadSortOptionText, { color: sort === threadSort ? colors.primary : colors.text }]}>
+                            {sort === 'recent' ? 'Recent' : 'A–Z'}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
                   )}
                 </View>
               </View>
-
-              <Text style={[styles.chatListTimestamp, { color: colors.textSecondary }]}>
-                Updated {formatDate(thread.updatedAt)}
-              </Text>
-              <Text style={[styles.chatListSubtitle, { color: colors.textSecondary }]}>
-                {parentThread ? `Branched from ${parentThread.title || 'another chat'}` : 'Primary chat for this project'}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </ScrollView>
+            )}
+          </>
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyChatList}>
+            <Text style={[styles.emptyChatListTitle, { color: colors.text }]}>No chats found</Text>
+            <Text style={[styles.emptyChatListDescription, { color: colors.textSecondary }]}>Try a different title.</Text>
+            <Button title="Clear search" variant="ghost" size="small" onPress={() => setThreadQuery('')} />
+          </View>
+        }
+      />
+    </View>
   );
 
   return (
@@ -1625,73 +1720,140 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  chatsList: {
+  threadSearch: {
+    marginBottom: 10,
+  },
+  threadToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 12,
+    marginBottom: 10,
+  },
+  threadCountText: {
+    flex: 1,
+    fontSize: 12,
+  },
+  threadSortWrap: {
+    position: 'relative',
+  },
+  threadSortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 40,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    borderWidth: 1,
+  },
+  threadSortButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  threadSortMenu: {
+    position: 'absolute',
+    right: 0,
+    top: 44,
+    minWidth: 112,
+    padding: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    zIndex: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  threadSortOption: {
+    justifyContent: 'center',
+    minHeight: 40,
+    paddingHorizontal: 10,
+    borderRadius: 7,
+  },
+  threadSortOptionText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chatListSeparator: {
+    height: 8,
   },
   chatListCard: {
-    borderWidth: 1,
-    borderRadius: 16,
-    padding: 16,
-    gap: 8,
-  },
-  chatListCardHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingLeft: 12,
+    paddingRight: 4,
   },
-  chatListCardTitleWrap: {
+  chatListCardButton: {
     flex: 1,
+    minWidth: 0,
+    paddingVertical: 10,
+    paddingRight: 8,
+  },
+  chatListCardContent: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  chatListCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
   },
   chatListCardTitle: {
-    fontSize: 16,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
     fontWeight: '700',
   },
   chatListMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
+    minWidth: 0,
   },
   chatListBadge: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
   chatListBadgeText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  chatListDetailBadge: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    maxWidth: '68%',
-  },
-  chatListDetailText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
   chatListCardActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingTop: 2,
   },
   chatListActionButton: {
-    padding: 2,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
   },
   chatListTimestamp: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11,
+    flexShrink: 0,
   },
-  chatListSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
+  emptyChatList: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    paddingHorizontal: 24,
+    gap: 6,
+  },
+  emptyChatListTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  emptyChatListDescription: {
+    fontSize: 13,
+    marginBottom: 8,
   },
   quickActionsContainer: {
     padding: 16,
