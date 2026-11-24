@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Project, ChatThread, Message, MemoryEntry, ProjectFile, ProjectFileChunk, Settings, DEFAULT_MAX_OUTPUT_TOKENS } from '@/types';
 import * as storage from '@/services/storage';
 import { pickAndReadFile } from '@/utils/fileImport';
@@ -70,6 +70,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const messageLoadRequestRef = useRef(0);
 
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [loadingMemories, setLoadingMemories] = useState(false);
@@ -101,6 +102,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadThreads = useCallback(async (projectId: string): Promise<ChatThread[]> => {
+    const startedAt = Date.now();
     setLoadingThreads(true);
     try {
       let loadedThreads = await storage.getProjectThreads(projectId);
@@ -110,6 +112,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         loadedThreads = [mainThread];
       }
       setThreads(loadedThreads);
+      if (__DEV__) {
+        console.debug(`[perf] loadThreads ${Date.now() - startedAt}ms (${loadedThreads.length} threads)`);
+      }
       return loadedThreads;
     } finally {
       setLoadingThreads(false);
@@ -117,12 +122,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadMessages = useCallback(async (projectId: string, threadId: string) => {
+    const requestId = ++messageLoadRequestRef.current;
+    const startedAt = Date.now();
     setLoadingMessages(true);
     try {
       const loadedMessages = await storage.getMessages(projectId, threadId);
+      if (requestId !== messageLoadRequestRef.current) return;
       setMessages(Array.isArray(loadedMessages) ? loadedMessages : []);
+      const latestAssistant = [...loadedMessages]
+        .reverse()
+        .find(message => message.role === 'assistant');
+      if (latestAssistant) {
+        setThreads(prev => prev.map(thread => thread.id === threadId
+          ? {
+              ...thread,
+              lastMessageModelId: latestAssistant.modelId,
+              lastMessageCost: latestAssistant.cost,
+            }
+          : thread));
+      }
+      if (__DEV__) {
+        const serializedLength = loadedMessages.reduce((total, message) => total + message.content.length, 0);
+        console.debug(
+          `[perf] loadMessages ${Date.now() - startedAt}ms (${loadedMessages.length} messages, ${serializedLength} content chars)`,
+        );
+      }
     } finally {
-      setLoadingMessages(false);
+      if (requestId === messageLoadRequestRef.current) {
+        setLoadingMessages(false);
+      }
     }
   }, []);
 
@@ -148,11 +176,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const selectThread = useCallback(async (thread: ChatThread | null) => {
+    messageLoadRequestRef.current += 1;
     setCurrentThread(thread);
+    setMessages([]);
+    setLoadingMessages(false);
     if (thread) {
       await loadMessages(thread.projectId, thread.id);
-    } else {
-      setMessages([]);
     }
   }, [loadMessages]);
 
@@ -161,20 +190,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (project) {
       const loadedThreads = await loadThreads(project.id);
       const nextThread = loadedThreads[0] || null;
+      messageLoadRequestRef.current += 1;
       setCurrentThread(nextThread);
-      await Promise.all([
-        nextThread ? loadMessages(project.id, nextThread.id) : Promise.resolve().then(() => setMessages([])),
-        loadMemories(project.id),
-        loadFiles(project.id),
-      ]);
-    } else {
-      setThreads([]);
-      setCurrentThread(null);
       setMessages([]);
       setMemories([]);
       setFiles([]);
+      setLoadingMessages(false);
+      if (nextThread) {
+        await loadMessages(project.id, nextThread.id);
+      }
+    } else {
+      messageLoadRequestRef.current += 1;
+      setThreads([]);
+      setCurrentThread(null);
+      setMessages([]);
+      setLoadingMessages(false);
+      setMemories([]);
+      setFiles([]);
     }
-  }, [loadFiles, loadMemories, loadMessages, loadThreads]);
+  }, [loadMessages, loadThreads]);
 
   const createProject = useCallback(async (name: string, systemPrompt?: string) => {
     const project = await storage.createProject(name, systemPrompt);
