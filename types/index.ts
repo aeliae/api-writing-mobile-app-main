@@ -90,12 +90,16 @@ export interface Settings {
   openRouterApiKey: string;
   selectedModel: string;
   maxOutputTokens: number;
+  temperature: number;
   theme: 'light' | 'dark' | 'system';
 }
 
 export const DEFAULT_MAX_OUTPUT_TOKENS = 20000;
 export const MIN_MAX_OUTPUT_TOKENS = 256;
 export const MAX_MAX_OUTPUT_TOKENS = 100000;
+export const DEFAULT_TEMPERATURE = 0.7;
+export const MIN_TEMPERATURE = 0;
+export const MAX_TEMPERATURE = 2;
 
 export interface ApiUsage {
   promptTokens: number;
