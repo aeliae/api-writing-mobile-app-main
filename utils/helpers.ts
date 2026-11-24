@@ -48,24 +48,26 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
     'anthropic/claude-3.5-sonnet': { input: 6, output: 30 },
     // DeepSeek
-    'deepseek/deepseek-v4-pro': { input: 0.66, output: 1.98 },
-    'deepseek/deepseek-v4-pro-0813': { input: 0.66, output: 1.98 },
-    'deepseek/deepseek-v4-flash': { input: 0.0826, output: 0.1652 },
-    'deepseek/deepseek-v4-flash-0731': { input: 0.14, output: 0.28 },
-    'deepseek/deepseek-v4.1-flash': { input: 0.15, output: 0.6 },
+    'deepseek/deepseek-v4-pro': { input: 1.28, output: 2.56 },
+    'deepseek/deepseek-v4-pro-0813': { input: 0.111, output: 4.44 },
+    'deepseek/deepseek-v4-flash': { input: 0.09, output: 0.18 },
+    'deepseek/deepseek-v4-flash-0731': { input: 0.0456, output: 0.3 },
+    'deepseek/deepseek-v4.1-flash': { input: 0.0507, output: 0.2028 },
     // Google
     'google/gemini-pro-1.5': { input: 1.25, output: 5 },
+    'google/gemini-4-argon': { input: 2, output: 10 },
     'google/gemma-4-31b-it:free': { input: 0, output: 0 },
-    'google/gemma-4-31b-it': { input: 0.1, output: 0.34 },
+    'google/gemma-4-31b-it': { input: 0.2, output: 0.4 },
     // Meta
-    'meta-llama/llama-3.1-70b-instruct': { input: 0.4, output: 0.4 },
+    'meta-llama/llama-3.1-70b-instruct': { input: 0.72, output: 0.72 },
     // MiniMax
-    'minimax/minimax-m2.7': { input: 0.3, output: 1.2 },
+    'minimax/minimax-m2.7': { input: 0.6, output: 1.8 },
     // Mistral
     'mistralai/mistral-large': { input: 2, output: 6 },
     // Moonshot AI
-    'moonshotai/kimi-k2.6': { input: 0.5605, output: 2.36 },
-    'moonshotai/kimi-k3': { input: 2.34, output: 11.7 },
+    'moonshotai/kimi-k2.6': { input: 0.65, output: 3.41 },
+    'moonshotai/kimi-k3': { input: 0.192, output: 16 },
+    'moonshotai/kimi-k3.1-pro': { input: 0.2403, output: 8.402 },
     // OpenAI
     'openai/gpt-4o': { input: 2.5, output: 10 },
     'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
@@ -77,12 +79,12 @@ export function estimateCost(promptTokens: number, completionTokens: number, mod
     'z-ai/glm-4.5v': { input: 0.6, output: 1.8 },
     'z-ai/glm-4.6': { input: 0.5, output: 2 },
     'z-ai/glm-4.6v': { input: 0.3, output: 0.9 },
-    'z-ai/glm-4.7': { input: 0.4, output: 1.75 },
-    'z-ai/glm-4.7-flash': { input: 0.06, output: 0.4 },
-    'z-ai/glm-5': { input: 0.6, output: 1.92 },
-    'z-ai/glm-5.2': { input: 1.19, output: 3.74 },
+    'z-ai/glm-4.7': { input: 0.6, output: 2.2 },
+    'z-ai/glm-4.7-flash': { input: 0.0605, output: 0.4 },
+    'z-ai/glm-5': { input: 1, output: 3.2 },
+    'z-ai/glm-5.2': { input: 0.62, output: 2.42 },
     'z-ai/glm-5-turbo': { input: 1.2, output: 4 },
-    'z-ai/glm-5.1': { input: 0.966, output: 3.036 },
+    'z-ai/glm-5.1': { input: 1.4, output: 4.4 },
     'z-ai/glm-5v-turbo': { input: 1.2, output: 4 },
   };
 
