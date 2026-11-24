@@ -13,6 +13,9 @@ import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
+  DEFAULT_TEMPERATURE,
+  MIN_TEMPERATURE,
+  MAX_TEMPERATURE,
 } from '@/types';
 import { generateId } from '@/utils/helpers';
 
@@ -505,6 +508,7 @@ function normalizeStoredSettings(raw: unknown): Settings {
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: DEFAULT_TEMPERATURE,
     theme: 'system',
   };
 
@@ -520,6 +524,7 @@ function normalizeStoredSettings(raw: unknown): Settings {
     raw.maxTokens,
     raw.max_tokens,
   );
+  const temperature = readNumber(raw.temperature);
 
   return {
     openRouterApiKey: readText(raw.openRouterApiKey, raw.apiKey, raw.api_key) || '',
@@ -527,6 +532,9 @@ function normalizeStoredSettings(raw: unknown): Settings {
     maxOutputTokens: maxOutputTokens === undefined
       ? defaults.maxOutputTokens
       : Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(maxOutputTokens))),
+    temperature: temperature === undefined
+      ? defaults.temperature
+      : Math.min(MAX_TEMPERATURE, Math.max(MIN_TEMPERATURE, temperature)),
     theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : defaults.theme,
   };
 }
@@ -1390,6 +1398,7 @@ export async function getSettings(): Promise<Settings> {
     openRouterApiKey: '',
     selectedModel: 'openai/gpt-4o-mini',
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: DEFAULT_TEMPERATURE,
     theme: 'system',
   };
 
