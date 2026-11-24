@@ -43,7 +43,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useApp } from '@/contexts/AppContext';
 import { Button, EmptyState, LoadingIndicator, Modal, FilesPanel, Input } from '@/components';
 import { sendMessage, ApiError } from '@/services/api';
-import { formatTokens, formatDate } from '@/utils/helpers';
+import { formatTokens, formatDate, getModelDisplayName } from '@/utils/helpers';
 import { ChatThread, MemoryMode, Message, Project, QUICK_ACTIONS } from '@/types';
 import * as storage from '@/services/storage';
 import { FileSizeLimitError, UnsupportedFileTypeError } from '@/utils/fileImport';
@@ -813,6 +813,7 @@ Consider pacing, tension building, and character development.`;
   const renderThreadItem = ({ item: thread }: { item: ChatThread }) => {
     const isActive = currentThread?.id === thread.id;
     const threadTitle = thread.title || (thread.parentThreadId ? 'Branch' : 'Chat');
+    const modelName = getModelDisplayName(thread.lastMessageModelId);
 
     return (
       <View
@@ -862,6 +863,14 @@ Consider pacing, tension building, and character development.`;
                   {thread.parentThreadId ? 'Branch' : 'Main'}
                 </Text>
               </View>
+              {modelName ? (
+                <Text
+                  style={[styles.chatListModelText, { color: colors.textSecondary }]}
+                  numberOfLines={1}
+                >
+                  {modelName}
+                </Text>
+              ) : null}
             </View>
           </View>
         </TouchableOpacity>
@@ -1825,6 +1834,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+  },
+  chatListModelText: {
+    flexShrink: 1,
+    maxWidth: '58%',
+    fontSize: 11,
   },
   chatListCardActions: {
     flexDirection: 'row',
