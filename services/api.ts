@@ -618,6 +618,7 @@ export async function sendMessage(
           MAX_MAX_OUTPUT_TOKENS,
           Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(settings.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS)),
         ),
+        temperature: settings.temperature,
         stream: useStreaming,
       }),
     });
