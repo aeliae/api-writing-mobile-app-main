@@ -21,10 +21,13 @@ import {
   AVAILABLE_MODELS,
   MAX_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
+  MAX_TEMPERATURE,
+  MIN_TEMPERATURE,
 } from '@/types';
 import { createAppBackup, getStorageDiagnostics, inspectAppBackup, restoreAppBackup, type AppBackupSnapshot, type AppBackupSummary } from '@/services/storage';
 
 const OUTPUT_TOKEN_PRESETS = [8000, 20000, 50000, 100000];
+const TEMPERATURE_PRESETS = [0, 0.3, 0.7, 1, 1.5, 2];
 type ModelOption = (typeof AVAILABLE_MODELS)[number];
 
 export default function SettingsScreen() {
@@ -40,6 +43,9 @@ export default function SettingsScreen() {
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState(String(settings.maxOutputTokens));
   const [savingTokenLimit, setSavingTokenLimit] = useState(false);
   const [tokenLimitError, setTokenLimitError] = useState('');
+  const [temperatureInput, setTemperatureInput] = useState(String(settings.temperature));
+  const [savingTemperature, setSavingTemperature] = useState(false);
+  const [temperatureError, setTemperatureError] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
   const [diagnosticModalVisible, setDiagnosticModalVisible] = useState(false);
@@ -63,7 +69,9 @@ export default function SettingsScreen() {
       setApiKey(settings.openRouterApiKey);
       setSelectedModel(settings.selectedModel);
       setMaxOutputTokensInput(String(settings.maxOutputTokens));
+      setTemperatureInput(String(settings.temperature));
       setTokenLimitError('');
+      setTemperatureError('');
     }, 0);
 
     return () => clearTimeout(syncTimer);
@@ -105,6 +113,26 @@ export default function SettingsScreen() {
       Alert.alert('Error', 'Failed to save response token limit');
     } finally {
       setSavingTokenLimit(false);
+    }
+  };
+
+  const handleSaveTemperature = async () => {
+    const parsed = Number(temperatureInput);
+    if (!Number.isFinite(parsed) || parsed < MIN_TEMPERATURE || parsed > MAX_TEMPERATURE) {
+      setTemperatureError(`Enter a number from ${MIN_TEMPERATURE} to ${MAX_TEMPERATURE}.`);
+      return;
+    }
+
+    setSavingTemperature(true);
+    try {
+      await updateSettings({ temperature: parsed });
+      setTemperatureInput(String(parsed));
+      setTemperatureError('');
+      Alert.alert('Success', 'Response variety saved');
+    } catch {
+      Alert.alert('Error', 'Failed to save response variety');
+    } finally {
+      setSavingTemperature(false);
     }
   };
 
@@ -668,6 +696,69 @@ export default function SettingsScreen() {
             onPress={handleSaveTokenLimit}
             loading={savingTokenLimit}
             disabled={savingTokenLimit || Number(maxOutputTokensInput) === settings.maxOutputTokens}
+            style={styles.saveButton}
+          />
+        </View>
+      </Card>
+
+      {/* Response Variety */}
+      <Card style={styles.card}>
+        <CardHeader
+          title="Response Variety"
+          subtitle="Control how predictable or varied the model's responses are"
+        />
+        <View style={styles.sectionContent}>
+          <Input
+            label="Temperature"
+            value={temperatureInput}
+            onChangeText={(value) => {
+              setTemperatureInput(value.replace(/[^0-9.]/g, ''));
+              setTemperatureError('');
+            }}
+            placeholder="0.7"
+            keyboardType="decimal-pad"
+            inputMode="decimal"
+            error={temperatureError}
+            hint="Lower values are more consistent; higher values are more creative."
+          />
+          <View style={styles.tokenPresets}>
+            {TEMPERATURE_PRESETS.map((value) => (
+              <TouchableOpacity
+                key={value}
+                style={[
+                  styles.tokenPreset,
+                  {
+                    backgroundColor:
+                      Number(temperatureInput) === value
+                        ? colors.primaryLight
+                        : colors.surfaceSecondary,
+                    borderColor:
+                      Number(temperatureInput) === value
+                        ? colors.primary
+                        : 'transparent',
+                  },
+                ]}
+                onPress={() => {
+                  setTemperatureInput(String(value));
+                  setTemperatureError('');
+                }}
+              >
+                <Text
+                  style={[
+                    styles.tokenPresetLabel,
+                    { color: Number(temperatureInput) === value ? colors.primary : colors.text },
+                  ]}
+                >
+                  {value.toFixed(1)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Button
+            title={savingTemperature ? 'Saving...' : 'Save Response Variety'}
+            onPress={handleSaveTemperature}
+            loading={savingTemperature}
+            disabled={savingTemperature || Number(temperatureInput) === settings.temperature}
             style={styles.saveButton}
           />
         </View>
