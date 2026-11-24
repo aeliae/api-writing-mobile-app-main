@@ -21,6 +21,7 @@ const KEYS = {
   THREADS: 'cw_threads',
   MESSAGES: 'cw_messages',
   MESSAGE_THREAD_IDS: 'cw_message_thread_ids',
+  LEGACY_MESSAGES_MIGRATED: 'cw_legacy_messages_migrated',
   MEMORIES: 'cw_memories',
   PROJECT_FILES: 'cw_project_files',
   PROJECT_FILE_CHUNKS: 'cw_project_file_chunks',
@@ -326,6 +327,8 @@ function normalizeStoredThread(raw: unknown): ChatThread | null {
       raw.contextSummaryMessageCount,
       raw.context_summary_message_count,
     ),
+    lastMessageModelId: readText(raw.lastMessageModelId, raw.last_message_model_id),
+    lastMessageCost: readText(raw.lastMessageCost, raw.last_message_cost),
     createdAt,
     updatedAt,
   };
@@ -889,13 +892,23 @@ async function getRawMessages(): Promise<Message[]> {
 }
 
 async function migrateLegacyMessagesToThreads(): Promise<void> {
+  try {
+    const migrationState = await AsyncStorage.getItem(KEYS.LEGACY_MESSAGES_MIGRATED);
+    if (migrationState === '1') return;
+  } catch (error) {
+    console.error('Error checking legacy message migration state:', error);
+  }
+
   const [projects, existingThreads, existingMessages] = await Promise.all([
     getProjects(),
     getRawThreads(),
     getRawMessages(),
   ]);
 
-  if (existingMessages.length === 0) return;
+  if (existingMessages.length === 0) {
+    await AsyncStorage.setItem(KEYS.LEGACY_MESSAGES_MIGRATED, '1');
+    return;
+  }
 
   const threadMap = new Map(existingThreads.map(thread => [thread.id, thread]));
   const projectThreadMap = new Map<string, ChatThread[]>();
@@ -974,6 +987,8 @@ async function migrateLegacyMessagesToThreads(): Promise<void> {
   if (messagesChanged) {
     await saveMessages(nextMessages);
   }
+
+  await AsyncStorage.setItem(KEYS.LEGACY_MESSAGES_MIGRATED, '1');
 }
 
 // Project operations
@@ -1054,28 +1069,8 @@ export async function getThreadById(threadId: string): Promise<ChatThread | null
 }
 
 export async function getProjectThreads(projectId: string): Promise<ChatThread[]> {
-  const threads = (await getAllThreads()).filter(thread => thread.projectId === projectId);
-  const messages = await getRawMessages();
-  const latestAssistantByThread = new Map<string, Message>();
-
-  for (const message of messages) {
-    if (message.role !== 'assistant' || message.projectId !== projectId) continue;
-
-    const current = latestAssistantByThread.get(message.threadId);
-    if (!current || new Date(message.createdAt).getTime() >= new Date(current.createdAt).getTime()) {
-      latestAssistantByThread.set(message.threadId, message);
-    }
-  }
-
-  return threads
-    .map(thread => {
-      const lastAssistant = latestAssistantByThread.get(thread.id);
-      return {
-        ...thread,
-        lastMessageModelId: lastAssistant?.modelId,
-        lastMessageCost: lastAssistant?.cost,
-      };
-    })
+  return (await getAllThreads())
+    .filter(thread => thread.projectId === projectId)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
@@ -1228,7 +1223,12 @@ export async function addMessage(message: Omit<Message, 'id' | 'createdAt'>): Pr
   const threadMessages = await getThreadMessages(message.threadId);
   await saveMessagesForThread(message.threadId, [...threadMessages, newMessage]);
   await maybeAutoTitleThread(message.threadId, message.role, message.content, threadMessages.length);
-  await updateThread(message.threadId, {});
+  const threadUpdates: Partial<ChatThread> = {};
+  if (message.role === 'assistant') {
+    if (message.modelId !== undefined) threadUpdates.lastMessageModelId = message.modelId;
+    if (message.cost !== undefined) threadUpdates.lastMessageCost = message.cost;
+  }
+  await updateThread(message.threadId, threadUpdates);
   await touchProject(message.projectId, newMessage.createdAt);
   return newMessage;
 }
