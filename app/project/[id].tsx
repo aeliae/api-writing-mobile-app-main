@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { memo, useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -55,11 +55,11 @@ const SCROLL_TO_BOTTOM_ACTIVE_OPACITY = 1;
 const SCROLL_TO_BOTTOM_IDLE_OPACITY = 0.38;
 const LARGE_NATIVE_EXPORT_THRESHOLD = 50000;
 
-const MEMORY_MODE_OPTIONS: Array<{
+const MEMORY_MODE_OPTIONS: {
   id: MemoryMode;
   label: string;
   description: string;
-}> = [
+}[] = [
   {
     id: 'smart',
     label: 'Smart',
@@ -113,7 +113,7 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, onBranch, isLoading, isStreaming }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, onBranch, isLoading, isStreaming }: ChatMessageProps) {
   if (isUser) {
     // User — warm surface panel with blue left accent
     return (
@@ -233,7 +233,7 @@ function ChatMessage({ message, colors, isUser, isLastAssistant, onRegenerate, o
       )}
     </View>
   );
-}
+});
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -241,7 +241,8 @@ export default function ProjectScreen() {
   const {
     loadProjects, selectProject, currentProject,
     threads, currentThread, createThread, branchThread, selectThread, updateThread, deleteThread,
-    messages, loadMessages, loadThreads, clearMessages,
+    messages, loadingMessages, loadMessages, loadThreads, clearMessages,
+    loadMemories, loadFiles,
     files, loadingFiles, createProjectFileFromImport, updateFile, deleteFile, loadFileChunks,
     settings, updateProject,
   } = useApp();
@@ -265,7 +266,7 @@ export default function ProjectScreen() {
   const [isNearBottom, setIsNearBottom] = useState(true);
 
   const inputRef = useRef<TextInput>(null);
-  const messagesScrollRef = useRef<ScrollView>(null);
+  const messagesScrollRef = useRef<FlatList<Message>>(null);
   const scrollMetricsRef = useRef({ contentHeight: 0, visibleHeight: 0, offsetY: 0 });
   const scrollIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [scrollToBottomOpacity] = useState(() => new Animated.Value(0));
@@ -292,9 +293,16 @@ export default function ProjectScreen() {
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
   }, [safeThreads, showThreadSearch, threadQuery, threadSort]);
-  const displayedMessages = [...safeMessages, ...liveMessages];
+  const displayedMessages = useMemo(() => [...safeMessages, ...liveMessages], [safeMessages, liveMessages]);
   const hasLiveAssistantMessage = liveMessages.some((message) => message.role === 'assistant');
   const hasDisplayedMessages = displayedMessages.length > 0;
+  const liveMessageIds = useMemo(() => new Set(liveMessages.map((message) => message.id)), [liveMessages]);
+  const lastAssistantIndex = useMemo(() => {
+    for (let index = displayedMessages.length - 1; index >= 0; index -= 1) {
+      if (displayedMessages[index].role === 'assistant') return index;
+    }
+    return -1;
+  }, [displayedMessages]);
   const shouldShowScrollToBottom = currentTab === 'chat' && hasDisplayedMessages && !isNearBottom;
 
   const clearScrollIdleTimeout = useCallback(() => {
@@ -409,13 +417,27 @@ export default function ProjectScreen() {
         loadProjects().then((loadedProjects) => {
           const project = loadedProjects.find((p) => p.id === id);
           if (project) {
-            selectProject(project);
+            if (currentProject?.id !== project.id) {
+              void selectProject(project);
+            }
             setSystemPrompt(project.systemPrompt || '');
           }
         });
       }
-    }, [id, loadProjects, selectProject])
+    }, [currentProject?.id, id, loadProjects, selectProject])
   );
+
+  const currentProjectId = currentProject?.id;
+
+  useEffect(() => {
+    if (!currentProjectId) return;
+
+    if (currentTab === 'memory') {
+      void loadMemories(currentProjectId);
+    } else if (currentTab === 'files') {
+      void loadFiles(currentProjectId);
+    }
+  }, [currentProjectId, currentTab, loadFiles, loadMemories]);
 
   const handleSendMessage = useCallback(async (contextPrompt?: string) => {
     const messageText = contextPrompt || inputText.trim();
@@ -609,6 +631,27 @@ export default function ProjectScreen() {
   const handleQuickAction = useCallback((action: typeof QUICK_ACTIONS[0]) => {
     void handleSendMessage(action.prompt);
   }, [handleSendMessage]);
+
+  const renderChatMessage = useCallback(({ item: message, index }: { item: Message; index: number }) => {
+    const isLiveMessage = liveMessageIds.has(message.id);
+    const isLastAssistant =
+      index === lastAssistantIndex &&
+      !hasLiveAssistantMessage &&
+      !isLoading;
+
+    return (
+      <ChatMessage
+        message={message}
+        colors={colors}
+        isUser={message.role === 'user'}
+        isLastAssistant={isLastAssistant}
+        onRegenerate={isLastAssistant ? handleRegenerate : undefined}
+        onBranch={isLiveMessage ? undefined : () => handleBranchFromMessage(message.id)}
+        isLoading={isLoading}
+        isStreaming={isLiveMessage && message.role === 'assistant'}
+      />
+    );
+  }, [colors, handleBranchFromMessage, handleRegenerate, hasLiveAssistantMessage, isLoading, lastAssistantIndex, liveMessageIds]);
 
   const handleClearHistory = () => {
     Alert.alert(
@@ -958,65 +1001,46 @@ Consider pacing, tension building, and character development.`;
       )}
 
       {/* Messages */}
-      <ScrollView
+      <FlatList
         ref={messagesScrollRef}
+        data={displayedMessages}
+        renderItem={renderChatMessage}
+        keyExtractor={(message) => message.id}
         style={styles.messagesContainer}
-        contentContainerStyle={[styles.messagesContent, styles.writingColumn]}
+        contentContainerStyle={[styles.messagesContent, styles.writingColumn, { flexGrow: 1 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         onLayout={handleMessagesLayout}
         onContentSizeChange={handleMessagesContentSizeChange}
         onScroll={handleMessagesScroll}
         scrollEventThrottle={16}
-      >
-        {error && (
+        ListHeaderComponent={error ? (
           <View style={[styles.errorBanner, { backgroundColor: colors.errorLight }]}>
             <Text style={[styles.errorText, { color: colors.error }]}>{error}</Text>
             <TouchableOpacity onPress={() => setError(null)}>
               <Text style={[styles.dismissText, { color: colors.error }]}>Dismiss</Text>
             </TouchableOpacity>
           </View>
-        )}
-
-        {displayedMessages.length === 0 ? (
+        ) : null}
+        ListEmptyComponent={loadingMessages ? (
+          <View style={styles.loadingMessagesContainer}>
+            <LoadingIndicator />
+          </View>
+        ) : (
           <EmptyState
             title="Start a conversation"
             description="Type a message below to begin writing with AI assistance"
           />
-        ) : (
-          <>
-            {displayedMessages.map((message, index) => {
-              const isLiveMessage = liveMessages.some((liveMessage) => liveMessage.id === message.id);
-              const isLastAssistant =
-                message.role === 'assistant' &&
-                !displayedMessages.slice(index + 1).some(m => m.role === 'assistant') &&
-                !hasLiveAssistantMessage &&
-                !isLoading;
-              return (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  colors={colors}
-                  isUser={message.role === 'user'}
-                  isLastAssistant={isLastAssistant}
-                  onRegenerate={isLastAssistant ? handleRegenerate : undefined}
-                  onBranch={isLiveMessage ? undefined : () => handleBranchFromMessage(message.id)}
-                  isLoading={isLoading}
-                  isStreaming={isLiveMessage && message.role === 'assistant'}
-                />
-              );
-            })}
-          </>
         )}
-
-        {lastUsage && !isLoading && (
+        ListFooterComponent={lastUsage && !isLoading ? (
           <View style={styles.usageContainer}>
             <Text style={[styles.usageText, { color: colors.textTertiary }]}>
               Tokens: {formatTokens(lastUsage.total)} (Prompt: {formatTokens(lastUsage.promptTokens)}, Completion: {formatTokens(lastUsage.completionTokens)})
             </Text>
           </View>
-        )}
-      </ScrollView>
+        ) : null}
+        extraData={{ isLoading, lastAssistantIndex, loadingMessages, liveMessageIds }}
+      />
 
       <Animated.View
         pointerEvents={shouldShowScrollToBottom ? 'auto' : 'none'}
@@ -1423,18 +1447,12 @@ Consider pacing, tension building, and character development.`;
 
 // Memory Panel Component
 function MemoryPanel({ project, colors }: { project: Project; colors: any }) {
-  const { memories, loadMemories, createMemory, updateMemory, deleteMemory, updateProject } = useApp();
+  const { memories, createMemory, updateMemory, deleteMemory, updateProject } = useApp();
   const safeMemories = Array.isArray(memories) ? memories : [];
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-
-  useFocusEffect(
-    useCallback(() => {
-      loadMemories(project.id);
-    }, [project.id, loadMemories])
-  );
 
   const handleSave = async () => {
     if (!title.trim() || !content.trim()) return;
@@ -1992,6 +2010,12 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 14,
+  },
+  loadingMessagesContainer: {
+    flex: 1,
+    minHeight: 140,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   usageContainer: {
     alignItems: 'center',
